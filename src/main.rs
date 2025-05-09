@@ -1,15 +1,21 @@
+mod config;
+mod manager;
 mod manifest;
 
 use axum::{Router, extract::Path, response::Response, routing::get};
+use config::Config;
 use reqwest::Client;
 use serde_json::Value;
-use std::path::PathBuf;
 use std::process::Stdio;
+use std::{path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::process::Command;
+use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
-use tracing::info;
+use tracing::{error, info};
 
+use anyhow::Result;
+use manager::check_channels;
 use manifest::{ManifestCache, filter_and_modify_manifest, maintain_manifest_cache};
 
 const IS_DEV: bool = cfg!(debug_assertions);
@@ -31,13 +37,22 @@ async fn main() {
             .init();
     }
 
+    let config = Arc::new(RwLock::new(Config::load().unwrap()));
+
     // Spawn background maintenance task
     tokio::spawn(maintain_manifest_cache());
 
-    let app = Router::new().route("/stream/{id}", get(stream_youtube));
+    let config_clone = config.clone();
+    tokio::spawn(async move {
+        let _ = check_channels(config_clone).await;
+    });
 
-    info!("Starting server on 127.0.0.1:8000");
-    let listener = TcpListener::bind("127.0.0.1:8000").await.unwrap();
+    let app = Router::new()
+        .route("/stream/{id}", get(stream_youtube))
+        .route("/youtube/direct/{id}", get(stream_youtube));
+
+    info!("Starting server on 127.0.0.1:8080");
+    let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -121,14 +136,7 @@ async fn stream_youtube(Path(video_id): Path<String>) -> Response {
         info!("Found HLS manifest URL: {}", manifest_url);
         let client = Client::new();
         let manifest = match async {
-            let response = client
-                .get(manifest_url)
-                .header(
-                    "User-Agent",
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-                )
-                .send()
-                .await?;
+            let response = client.get(manifest_url).send().await?;
             response.text().await
         }
         .await
@@ -139,6 +147,8 @@ async fn stream_youtube(Path(video_id): Path<String>) -> Response {
                     return direct_mp4_streaming(&url, &video_id).await;
                 }
                 // Filter and modify the manifest
+                let original_cache = ManifestCache::new(&video_id, content.clone());
+                original_cache.save_original(&cache_dir).unwrap();
                 filter_and_modify_manifest(content)
             }
             Err(e) => {
