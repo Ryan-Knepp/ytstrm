@@ -55,6 +55,12 @@ impl ManifestCache {
         fs::write(path, &self.content)
     }
 
+    pub fn save_original(&self, cache_dir: &PathBuf) -> std::io::Result<()> {
+        fs::create_dir_all(cache_dir)?;
+        let path = cache_dir.join(format!("{}.original.m3u8", self.video_id));
+        fs::write(path, &self.content)
+    }
+
     pub fn load(video_id: &str, cache_dir: &PathBuf) -> std::io::Result<Self> {
         let path = cache_dir.join(format!("{}.m3u8", video_id));
         let content = fs::read_to_string(path)?;
@@ -64,10 +70,11 @@ impl ManifestCache {
 
 pub fn filter_and_modify_manifest(content: String) -> String {
     let lines: Vec<&str> = content.lines().collect();
-    let mut highest_bandwidth = 0;
-    let mut best_video_info = None;
-    let mut best_video_url = None;
-    let mut best_audio_line = None;
+    let mut video_streams = Vec::new();
+    let mut high_audio_default = None;
+    let mut high_audio_backup = None;
+    let mut sd_audio_default = None;
+    let mut sd_audio_backup = None;
 
     let mut i = 0;
     while i < lines.len() {
@@ -83,39 +90,49 @@ pub fn filter_and_modify_manifest(content: String) -> String {
                 .and_then(|s| s.split(',').next())
             {
                 if let Ok(bandwidth) = bandwidth_str.parse::<u32>() {
-                    if bandwidth > highest_bandwidth {
-                        highest_bandwidth = bandwidth;
-                        best_video_info = Some(
-                            info.replace(&format!("BANDWIDTH={}", bandwidth), "BANDWIDTH=279001"),
-                        );
-                        best_video_url = Some(url);
-                    }
+                    video_streams.push((bandwidth, info, url));
                 }
             }
             i += 1; // Skip the URL line
-        } else if line.contains("#EXT-X-MEDIA:") && line.contains("TYPE=AUDIO") {
-            // Try to find English audio or fall back to first audio track
-            if best_audio_line.is_none()
-                || (line.contains("LANGUAGE=\"en\"") || line.contains("LANGUAGE='en'"))
-            {
-                best_audio_line = Some(line);
+        } else if line.starts_with("#EXT-X-MEDIA:") && line.contains("URI") {
+            let is_default = line.contains("DEFAULT=YES");
+            if line.contains("234") {
+                if is_default {
+                    high_audio_default = Some(line);
+                } else if high_audio_default.is_none() {
+                    high_audio_backup = Some(line);
+                }
+            } else {
+                if is_default {
+                    sd_audio_default = Some(line);
+                } else if sd_audio_default.is_none() {
+                    sd_audio_backup = Some(line);
+                }
             }
         }
         i += 1;
     }
 
+    // Sort streams by bandwidth (highest to lowest) and take top 3
+    video_streams.sort_by(|a, b| b.0.cmp(&a.0));
+    video_streams.truncate(3);
+
     // Build final manifest
     let mut final_manifest = String::from("#EXTM3U\n#EXT-X-INDEPENDENT-SEGMENTS\n");
 
-    // Add only the best audio track
-    if let Some(audio_line) = best_audio_line {
-        final_manifest.push_str(audio_line);
+    // Add audio track (using existing priority order)
+    if let Some(audio) = high_audio_default
+        .or(sd_audio_default)
+        .or(high_audio_backup)
+        .or(sd_audio_backup)
+    {
+        final_manifest.push_str(audio);
         final_manifest.push('\n');
     }
 
-    // Add best video stream
-    if let (Some(info), Some(url)) = (best_video_info, best_video_url) {
-        final_manifest.push_str(&info);
+    // Add top 3 video streams
+    for (_bandwidth, info, url) in video_streams {
+        final_manifest.push_str(info);
         final_manifest.push('\n');
         final_manifest.push_str(url);
         final_manifest.push('\n');
@@ -192,18 +209,15 @@ async fn refresh_manifest(
             .and_then(|f| f["manifest_url"].as_str())
     }) {
         let client = Client::new();
-        let response = client
-            .get(manifest_url)
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-            )
-            .send()
-            .await?;
+        let response = client.get(manifest_url).send().await?;
 
         let content = response.text().await?;
 
         if content.contains("#EXTM3U") {
+            // Save original manifest first
+            let original_cache = ManifestCache::new(video_id, content.clone());
+            original_cache.save_original(cache_dir)?;
+
             let manifest = filter_and_modify_manifest(content);
             let cache = ManifestCache::new(video_id, manifest);
             cache.save(cache_dir)?;
