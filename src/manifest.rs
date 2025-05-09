@@ -1,3 +1,4 @@
+use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde_json::Value;
 use std::fs;
@@ -66,6 +67,79 @@ impl ManifestCache {
         let content = fs::read_to_string(path)?;
         Ok(Self::new(video_id, content))
     }
+}
+
+pub async fn fetch_and_filter_manifest(
+    video_id: &str,
+    cache_dir: &PathBuf,
+    save_cache: bool,
+) -> Result<String> {
+    let url = format!("https://www.youtube.com/watch?v={}", video_id);
+
+    // Get video metadata as JSON
+    let output = Command::new("yt-dlp")
+        .args(["-j", "--no-playlist", "--cookies", "cookies.txt", &url])
+        .output()
+        .await
+        .map_err(|e| anyhow!("Failed to execute yt-dlp: {}", e))?;
+
+    let metadata: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| anyhow!("Failed to parse metadata JSON: {}", e))?;
+
+    // Get first manifest URL
+    let manifest_url = metadata["formats"]
+        .as_array()
+        .and_then(|formats| {
+            formats
+                .iter()
+                .find(|f| f["manifest_url"].is_string())
+                .and_then(|f| f["manifest_url"].as_str())
+        })
+        .ok_or_else(|| anyhow!("No HLS manifest URL found"))?;
+
+    info!("Found HLS manifest URL: {}", manifest_url);
+
+    let client = Client::new();
+    let content = client
+        .get(manifest_url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Failed to fetch manifest: {}", e))?
+        .text()
+        .await
+        .map_err(|e| anyhow!("Failed to read manifest content: {}", e))?;
+
+    if !content.contains("#EXTM3U") {
+        return Err(anyhow!("Invalid manifest format"));
+    }
+
+    // Save original manifest if requested
+    // if save_cache {
+    //     let original_cache = ManifestCache::new(video_id, content.clone());
+    //     if let Err(e) = original_cache.save_original(cache_dir) {
+    //         info!("Failed to save original manifest: {}", e);
+    //     }
+    // }
+
+    // Filter and modify the manifest
+    let manifest = filter_and_modify_manifest(content);
+
+    // Ensure manifest ends with newline
+    let manifest = if !manifest.ends_with('\n') {
+        format!("{}\n", manifest)
+    } else {
+        manifest
+    };
+
+    // Cache the filtered manifest if requested
+    if save_cache {
+        let cache = ManifestCache::new(video_id, manifest.clone());
+        if let Err(e) = cache.save(cache_dir) {
+            info!("Failed to cache manifest: {}", e);
+        }
+    }
+
+    Ok(manifest)
 }
 
 pub fn filter_and_modify_manifest(content: String) -> String {
@@ -169,11 +243,7 @@ pub async fn maintain_manifest_cache() {
                         // Refresh if expires within 30 minutes
                         if cache.expires < (now + 1800) {
                             info!("Refreshing manifest for {}", video_id);
-
-                            // Reuse stream_youtube logic but only for manifest fetching
-                            let url = format!("https://www.youtube.com/watch?v={}", video_id);
-
-                            match refresh_manifest(video_id, &url, &cache_dir).await {
+                            match fetch_and_filter_manifest(video_id, &cache_dir, true).await {
                                 Ok(_) => info!("Successfully refreshed manifest for {}", video_id),
                                 Err(e) => {
                                     info!("Failed to refresh manifest for {}: {}", video_id, e)
@@ -187,45 +257,5 @@ pub async fn maintain_manifest_cache() {
 
         // Sleep for 15 minutes before next check
         tokio::time::sleep(tokio::time::Duration::from_secs(900)).await;
-    }
-}
-
-async fn refresh_manifest(
-    video_id: &str,
-    url: &str,
-    cache_dir: &PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new("yt-dlp")
-        .args(["-j", "--no-playlist", "--cookies", "cookies.txt", url])
-        .output()
-        .await?;
-
-    let metadata: Value = serde_json::from_slice(&output.stdout)?;
-
-    if let Some(manifest_url) = metadata["formats"].as_array().and_then(|formats| {
-        formats
-            .iter()
-            .find(|f| f["manifest_url"].is_string())
-            .and_then(|f| f["manifest_url"].as_str())
-    }) {
-        let client = Client::new();
-        let response = client.get(manifest_url).send().await?;
-
-        let content = response.text().await?;
-
-        if content.contains("#EXTM3U") {
-            // Save original manifest first
-            let original_cache = ManifestCache::new(video_id, content.clone());
-            original_cache.save_original(cache_dir)?;
-
-            let manifest = filter_and_modify_manifest(content);
-            let cache = ManifestCache::new(video_id, manifest);
-            cache.save(cache_dir)?;
-            Ok(())
-        } else {
-            Err("Invalid manifest format".into())
-        }
-    } else {
-        Err("No manifest URL found".into())
     }
 }
