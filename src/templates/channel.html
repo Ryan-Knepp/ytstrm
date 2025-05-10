@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Youtube Strmer - {{ channel.name if channel else "New Channel" }}{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto">
+  <div class="bg-white shadow-md rounded-lg p-6 border border-slate-200">
+    <div class="flex justify-between items-center mb-6">
+      <h1 class="text-2xl font-bold text-slate-800">
+        {{ channel.name if channel else "New Channel" }}
+      </h1>
+      <a 
+        href="/"
+        class="text-slate-600 hover:text-slate-800"
+      >
+        Back to Settings
+      </a>
+    </div>
+
+    <form hx-{{ "put" if channel else "post" }}="/api/channels/{{ channel.id if channel else "new" }}"
+          hx-target="body">
+      <div class="space-y-6">
+        <div>
+          <label class="block text-sm font-medium text-slate-600">Channel Name</label>
+          <input
+            type="text"
+            name="name"
+            value="{{ channel.name if channel else "" }}"
+            class="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
+            required
+          />
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-slate-600">Channel Handle (@name)</label>
+          <input
+            type="text"
+            name="handle"
+            value="{{ channel.handle if channel else "" }}"
+            class="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
+            required
+          />
+          <p class="mt-1 text-sm text-slate-500">Enter the channel handle without the @ symbol</p>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-slate-600">Maximum Videos</label>
+          <input
+            type="number"
+            name="max_videos"
+            value="{{ channel.max_videos if channel and channel.max_videos else "" }}"
+            class="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
+          />
+          <p class="mt-1 text-sm text-slate-500">Optional: Limit the number of videos to keep</p>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-slate-600">Maximum Age (days)</label>
+          <input
+            type="number"
+            name="max_age_days"
+            value="{{ channel.max_age_days if channel and channel.max_age_days else "" }}"
+            class="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
+          />
+          <p class="mt-1 text-sm text-slate-500">Optional: Only keep videos newer than this many days</p>
+        </div>
+
+        <div class="flex justify-end space-x-4">
+          {% if channel %}
+          <button
+            type="button"
+            hx-delete="/api/channels/{{ channel.id }}"
+            hx-confirm="Are you sure you want to delete this channel?"
+            class="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors"
+          >
+            Delete Channel
+          </button>
+          {% endif %}
+          <button
+            type="submit"
+            class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition-colors"
+          >
+            {{ "Save Changes" if channel else "Add Channel" }}
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="save-indicator" class="htmx-indicator fixed bottom-4 right-4">
+  <div class="bg-slate-800 text-white px-4 py-2 rounded-md shadow-lg">
+    Saving...
+  </div>
+</div>
+{% endblock %}

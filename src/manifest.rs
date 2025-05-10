@@ -7,6 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 use tracing::info;
 
+use crate::ConfigState;
+use crate::config::Config;
+
 pub struct ManifestCache {
     pub video_id: String,
     pub content: String,
@@ -215,38 +218,53 @@ pub fn filter_and_modify_manifest(content: String) -> String {
     final_manifest
 }
 
-pub async fn maintain_manifest_cache() {
-    let cache_dir = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("ytstrm/manifests");
-
+pub async fn maintain_manifest_cache(config: ConfigState) {
     loop {
         info!("Starting manifest cache maintenance...");
 
-        // Read all cache files
-        if let Ok(entries) = fs::read_dir(&cache_dir) {
-            for entry in entries.flatten() {
-                if let Some(file_name) = entry.file_name().to_str() {
-                    if !file_name.ends_with(".m3u8") {
-                        continue;
-                    }
+        let config_guard = config.read().await;
+        // Iterate through each channel
+        for channel in &config_guard.channels {
+            // Check each season directory in the channel
+            if let Ok(entries) = fs::read_dir(&channel.media_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    // Only look in Season directories
+                    if path.is_dir()
+                        && path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.starts_with("Season "))
+                            .unwrap_or(false)
+                    {
+                        // Check manifests in this season directory
+                        if let Ok(files) = fs::read_dir(&path) {
+                            for file in files.flatten() {
+                                if let Some(file_name) = file.file_name().to_str() {
+                                    if !file_name.ends_with(".m3u8") {
+                                        continue;
+                                    }
 
-                    let video_id = file_name.trim_end_matches(".m3u8");
+                                    let video_id = file_name.trim_end_matches(".m3u8");
+                                    if let Ok(cache) = ManifestCache::load(video_id, &path) {
+                                        let now = SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_secs();
 
-                    // Check if manifest is near expiration
-                    if let Ok(cache) = ManifestCache::load(video_id, &cache_dir) {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-
-                        // Refresh if expires within 30 minutes
-                        if cache.expires < (now + 1800) {
-                            info!("Refreshing manifest for {}", video_id);
-                            match fetch_and_filter_manifest(video_id, &cache_dir, true).await {
-                                Ok(_) => info!("Successfully refreshed manifest for {}", video_id),
-                                Err(e) => {
-                                    info!("Failed to refresh manifest for {}: {}", video_id, e)
+                                        if cache.expires < (now + 1800) {
+                                            info!("Refreshing manifest for {}", video_id);
+                                            if let Err(e) =
+                                                fetch_and_filter_manifest(video_id, &path, true)
+                                                    .await
+                                            {
+                                                info!(
+                                                    "Failed to refresh manifest for {}: {}",
+                                                    video_id, e
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -254,6 +272,7 @@ pub async fn maintain_manifest_cache() {
                 }
             }
         }
+        drop(config_guard);
 
         // Sleep for 15 minutes before next check
         tokio::time::sleep(tokio::time::Duration::from_secs(900)).await;

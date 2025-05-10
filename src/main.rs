@@ -1,4 +1,5 @@
 mod api;
+mod channel;
 mod config;
 mod manifest;
 mod templates;
@@ -48,7 +49,8 @@ async fn main() {
     let config = Arc::new(RwLock::new(Config::load().unwrap()));
 
     // Spawn background maintenance task
-    tokio::spawn(maintain_manifest_cache());
+    let config_clone = config.clone();
+    tokio::spawn(maintain_manifest_cache(config_clone));
 
     let config_clone = config.clone();
     tokio::spawn(async move {
@@ -64,6 +66,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(index_handler))
+        .merge(channel::routes())
         .route("/stream/{id}", get(stream_youtube))
         .route("/youtube/direct/{id}", get(stream_youtube))
         .nest("/api", api::routes())

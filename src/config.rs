@@ -7,6 +7,7 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
+use crate::ConfigState;
 use crate::manifest::fetch_and_filter_manifest;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -38,23 +39,51 @@ pub struct VideoInfo {
 
 impl Channel {
     pub async fn scan_videos(&self) -> Result<Vec<VideoInfo>> {
+        let handle = self.handle.trim_start_matches('@');
+        let url = format!("https://www.youtube.com/@{}/videos", handle);
+        info!("Fetching videos from URL: {}", url);
+
         let output = Command::new("yt-dlp")
             .args([
-                "--flat-playlist",
-                "-j",
+                "--compat-options",
+                "no-youtube-channel-redirect",
+                "--compat-options",
+                "no-youtube-unavailable-videos",
                 "--dateafter",
-                // If max_age_days is set, only get videos from that period
                 &self
                     .max_age_days
                     .map(|days| format!("today-{}days", days))
                     .unwrap_or_else(|| "19700101".to_string()),
+                "--playlist-start",
+                "1",
+                "--playlist-end",
+                &self.max_videos.unwrap_or(50).to_string(),
+                "--no-warnings",
+                "--dump-json", // Changed from -j to --dump-json
                 "--cookies",
                 "cookies.txt",
-                &format!("https://www.youtube.com/{}", self.handle),
+                &url,
             ])
             .output()
             .await
             .map_err(|e| anyhow!("Failed to execute yt-dlp: {}", e))?;
+
+        // Save output for debugging
+        let debug_dir = PathBuf::from("debug");
+        std::fs::create_dir_all(&debug_dir)?;
+        std::fs::write(
+            debug_dir.join(format!("{}_video_list.json", self.handle)),
+            &output.stdout,
+        )?;
+
+        if !output.status.success() {
+            std::fs::write(
+                debug_dir.join(format!("{}_video_list_error.txt", self.handle)),
+                &output.stderr,
+            )?;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("yt-dlp failed: {}", stderr));
+        }
 
         let mut videos: Vec<VideoInfo> = output
             .stdout
@@ -93,7 +122,7 @@ impl Channel {
         Ok(videos)
     }
 
-    fn get_season_from_date(&self, upload_date: &str) -> Result<u32> {
+    pub fn get_season_from_date(&self, upload_date: &str) -> Result<u32> {
         // upload_date format: YYYYMMDD
         upload_date
             .get(0..4)
@@ -192,17 +221,60 @@ impl Channel {
         }
 
         // Pre-cache manifest
-        self.cache_manifest(video.id.as_str(), &config.jellyfin_media_path)
+        self.cache_manifest(video.id.as_str())
             .await
             .map_err(|e| anyhow!("Failed to cache manifest: {}", e))?;
 
         Ok(())
     }
 
-    async fn cache_manifest(&self, video_id: &str, cache_dir: &PathBuf) -> Result<()> {
-        fetch_and_filter_manifest(video_id, cache_dir, true)
+    async fn cache_manifest(&self, video_id: &str) -> Result<()> {
+        // Get season directory from video ID
+        let output = Command::new("yt-dlp")
+            .args(["--get-filename", "-o", "%(upload_date)s", video_id])
+            .output()
+            .await
+            .map_err(|e| anyhow!("Failed to get upload date: {}", e))?;
+
+        let upload_date = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let season = self.get_season_from_date(&upload_date)?;
+        let season_dir = self.media_dir.join(format!("Season {}", season));
+
+        // Use season directory as cache location for this video's manifest
+        fetch_and_filter_manifest(video_id, &season_dir, true)
             .await
             .map(|_| ())
+    }
+
+    pub async fn process_new_videos(&self, config: &Config) -> Result<usize> {
+        let mut new_videos = 0;
+        let videos = self.scan_videos().await?;
+
+        for video in videos {
+            let season = self.get_season_from_date(&video.upload_date)?;
+            let season_dir = self.media_dir.join(format!("Season {}", season));
+            let episode_base = format!("{} - {}", video.upload_date, video.title);
+            let safe_filename = episode_base
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '-' || c == ' ' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>();
+
+            if !season_dir.join(format!("{}.strm", safe_filename)).exists() {
+                self.create_media_files(&video, config).await?;
+                new_videos += 1;
+            }
+
+            // Cache manifest regardless of whether the video is new
+            self.cache_manifest(&video.id).await?;
+        }
+
+        Ok(new_videos)
     }
 }
 
@@ -247,7 +319,7 @@ impl Config {
     }
 }
 
-pub async fn check_channels(config: Arc<RwLock<Config>>) -> Result<()> {
+pub async fn check_channels(config: ConfigState) -> Result<()> {
     loop {
         let config_guard = config.read().await;
         info!(
@@ -256,39 +328,16 @@ pub async fn check_channels(config: Arc<RwLock<Config>>) -> Result<()> {
         );
 
         for channel in &config_guard.channels {
-            match channel.scan_videos().await {
-                Ok(videos) => {
-                    for video in videos {
-                        // Get season directory from upload date
-                        if let Ok(season) = channel.get_season_from_date(&video.upload_date) {
-                            let season_dir = channel.media_dir.join(format!("Season {}", season));
-                            let episode_base = format!("{} - {}", video.upload_date, video.title);
-                            let safe_filename = episode_base
-                                .chars()
-                                .map(|c| {
-                                    if c.is_ascii_alphanumeric() || c == '-' || c == ' ' {
-                                        c
-                                    } else {
-                                        '_'
-                                    }
-                                })
-                                .collect::<String>();
-
-                            // Check if video exists in its season directory
-                            if !season_dir.join(format!("{}.strm", safe_filename)).exists() {
-                                info!("New video found: {} ({})", video.title, video.id);
-                                if let Err(e) =
-                                    channel.create_media_files(&video, &config_guard).await
-                                {
-                                    error!("Failed to create media files: {}", e);
-                                }
-                            }
-                        }
+            match channel.process_new_videos(&config_guard).await {
+                Ok(count) => {
+                    if count > 0 {
+                        info!("Added {} new videos for channel {}", count, channel.handle);
                     }
                 }
-                Err(e) => error!("Failed to scan channel {}: {}", channel.handle, e),
+                Err(e) => error!("Failed to process channel {}: {}", channel.handle, e),
             }
         }
+
         let sleep_duration = config_guard.check_interval * 60;
         drop(config_guard);
         tokio::time::sleep(Duration::from_secs(sleep_duration)).await;
