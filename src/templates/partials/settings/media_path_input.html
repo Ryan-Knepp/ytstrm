@@ -1,0 +1,15 @@
+<div>
+  <input
+    type="text"
+    name="jellyfin_media_path"
+    value="{{ value }}"
+    class="mt-1 block w-full rounded-md border-{{ 'red' if error else 'slate' }}-300 shadow-sm focus:border-{{ 'red' if error else 'purple' }}-500 focus:ring-{{ 'red' if error else 'purple' }}-500"
+    hx-put="/api/config/media-path"
+    hx-trigger="change delay:500ms"
+    hx-target="closest div"
+    hx-swap="outerHTML"
+  />
+  {% if error %}
+  <div class="mt-1 text-sm text-red-600">{{ error }}</div>
+  {% endif %}
+</div>

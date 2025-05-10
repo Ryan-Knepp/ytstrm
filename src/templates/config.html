@@ -1,0 +1,61 @@
+{% extends "base.html" %} {% block title %}Youtube Strmer -
+Configuration{%endblock %} {% block content %}
+<div class="bg-white shadow-md rounded-lg p-6 border border-slate-200">
+  <h1 class="text-2xl font-bold mb-4 text-slate-800">Configuration</h1>
+
+  <div class="mb-6">
+    <h2 class="text-xl font-semibold mb-2 text-slate-700">Server Settings</h2>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-slate-600"
+          >Server Address</label
+        >
+        {% with value = config.server_address %} {% include
+        "partials/settings/server_address_input.html" %} {% endwith %}
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-600"
+          >Check Interval (minutes)</label
+        >
+        {% with value = config.check_interval %} {% include
+        "partials/settings/check_interval_input.html" %} {% endwith %}
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-600"
+          >Media Directory</label
+        >
+        {% with value = config.jellyfin_media_path %} {% include
+        "partials/settings/media_path_input.html" %} {% endwith %}
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <h2 class="text-xl font-semibold mb-2 text-slate-700">Channels</h2>
+    <div class="space-y-4">
+      {% for channel in config.channels %}
+      <div class="border border-slate-200 rounded p-4 hover:bg-slate-50">
+        <h3 class="font-medium text-slate-800">{{ channel.name }}</h3>
+        <p class="text-sm text-slate-500">{{ channel.handle }}</p>
+      </div>
+      {% endfor %}
+    </div>
+
+    <button
+      hx-get="/api/channels/new"
+      hx-target="#new-channel-form"
+      class="mt-4 bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition-colors"
+    >
+      Add Channel
+    </button>
+    <div id="new-channel-form"></div>
+  </div>
+</div>
+
+<div id="save-indicator" class="htmx-indicator fixed bottom-4 right-4">
+  <div class="bg-slate-800 text-white px-4 py-2 rounded-md shadow-lg">
+    Saving...
+  </div>
+</div>
+{% endblock %}

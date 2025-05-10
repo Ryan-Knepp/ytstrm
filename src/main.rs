@@ -1,6 +1,10 @@
+mod api;
 mod config;
 mod manifest;
+mod templates;
 
+use axum::extract::State;
+use axum::response::Html;
 use axum::{Router, extract::Path, response::Response, routing::get};
 use config::{Config, check_channels};
 use std::process::Stdio;
@@ -12,8 +16,17 @@ use tokio_util::io::ReaderStream;
 use tracing::info;
 
 use manifest::{ManifestCache, fetch_and_filter_manifest, maintain_manifest_cache};
+use templates::{TemplateState, Templates};
 
 const IS_DEV: bool = cfg!(debug_assertions);
+
+pub type ConfigState = Arc<RwLock<Config>>;
+
+pub struct AppState {
+    config: ConfigState,
+    templates: TemplateState,
+}
+pub type AppStateArc = Arc<AppState>;
 
 #[tokio::main]
 async fn main() {
@@ -42,9 +55,19 @@ async fn main() {
         let _ = check_channels(config_clone).await;
     });
 
+    let templates = Arc::new(Templates::new().unwrap());
+
+    let app_state = Arc::new(AppState {
+        config: config.clone(),
+        templates: templates.clone(),
+    });
+
     let app = Router::new()
+        .route("/", get(index_handler))
         .route("/stream/{id}", get(stream_youtube))
-        .route("/youtube/direct/{id}", get(stream_youtube));
+        .route("/youtube/direct/{id}", get(stream_youtube))
+        .nest("/api", api::routes())
+        .with_state(app_state);
 
     info!("Starting server on 127.0.0.1:8080");
     let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
@@ -155,4 +178,18 @@ async fn direct_mp4_streaming(url: &str, video_id: &str) -> Response {
         .header("Cache-Control", "no-cache")
         .body(axum::body::Body::from_stream(stream))
         .unwrap()
+}
+
+async fn index_handler(State(state): State<AppStateArc>) -> Result<Html<String>, ()> {
+    let config_guard = state.config.read().await;
+    let html = state
+        .templates
+        .render(
+            "config.html",
+            minijinja::context! {
+                config => &*config_guard,
+            },
+        )
+        .map_err(|_| ())?;
+    Ok(Html(html))
 }
