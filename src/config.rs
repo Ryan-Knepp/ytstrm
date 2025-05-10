@@ -93,44 +93,103 @@ impl Channel {
         Ok(videos)
     }
 
-    pub async fn create_media_files(&self, video: &VideoInfo, config: &Config) -> Result<()> {
-        // Changed to anyhow Result
-        let video_dir = self.media_dir.join(&video.id);
-        std::fs::create_dir_all(&video_dir)
-            .map_err(|e| anyhow!("Failed to create video directory: {}", e))?;
+    fn get_season_from_date(&self, upload_date: &str) -> Result<u32> {
+        // upload_date format: YYYYMMDD
+        upload_date
+            .get(0..4)
+            .and_then(|year| year.parse().ok())
+            .ok_or_else(|| anyhow!("Invalid upload date format"))
+    }
 
-        // Create NFO file
+    fn create_channel_structure(&self) -> Result<()> {
+        // Create main channel directory if it doesn't exist
+        std::fs::create_dir_all(&self.media_dir)?;
+
+        // Create channel NFO file
+        let channel_nfo = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<tvshow>
+    <title>{}</title>
+    <plot>Videos from YouTube channel {}</plot>
+</tvshow>"#,
+            self.name, self.handle
+        );
+        std::fs::write(self.media_dir.join("tvshow.nfo"), channel_nfo)
+            .map_err(|e| anyhow!("Failed to write channel NFO file: {}", e))?;
+
+        Ok(())
+    }
+
+    pub async fn create_media_files(&self, video: &VideoInfo, config: &Config) -> Result<()> {
+        // Ensure channel structure exists
+        self.create_channel_structure()?;
+
+        // Get season number from upload date
+        let season = self.get_season_from_date(&video.upload_date)?;
+        let season_dir = self.media_dir.join(format!("Season {}", season));
+        std::fs::create_dir_all(&season_dir)
+            .map_err(|e| anyhow!("Failed to create season directory: {}", e))?;
+
+        // Create episode filename from upload date and title
+        // Format: YYYYMMDD - Title.strm
+        let episode_base = format!("{} - {}", video.upload_date, video.title);
+        let safe_filename = episode_base
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == ' ' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+
+        // Create episode NFO
         let nfo_content = format!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <episodedetails>
     <title>{}</title>
-    <showtitle>{}</showtitle>
-    <plot>{}</plot>
     <aired>{}</aired>
+    <premiered>{}</premiered>
+    <plot>{}</plot>
+    <thumb>{}</thumb>
 </episodedetails>"#,
-            video.title, self.name, video.description, video.upload_date
+            video.title,
+            video.upload_date,
+            video.upload_date,
+            video.description,
+            video.thumbnail_url
         );
-        std::fs::write(video_dir.join("tvshow.nfo"), nfo_content)
-            .map_err(|e| anyhow!("Failed to write NFO file: {}", e))?;
+        std::fs::write(
+            season_dir.join(format!("{}.nfo", safe_filename)),
+            nfo_content,
+        )
+        .map_err(|e| anyhow!("Failed to write episode NFO: {}", e))?;
 
         // Create STRM file
         let strm_content = format!("http://{}/stream/{}", config.server_address, video.id);
-        std::fs::write(video_dir.join("video.strm"), strm_content)
-            .map_err(|e| anyhow!("Failed to write STRM file: {}", e))?;
+        std::fs::write(
+            season_dir.join(format!("{}.strm", safe_filename)),
+            strm_content,
+        )
+        .map_err(|e| anyhow!("Failed to write STRM file: {}", e))?;
 
-        // Download thumbnail
-        let client = reqwest::Client::new();
-        let img_bytes = client
-            .get(&video.thumbnail_url)
-            .send()
-            .await
-            .map_err(|e| anyhow!("Failed to fetch thumbnail: {}", e))?
-            .bytes()
-            .await
-            .map_err(|e| anyhow!("Failed to read thumbnail bytes: {}", e))?;
+        // Download channel thumbnail if it doesn't exist
+        let poster_path = self.media_dir.join("poster.jpg");
+        if !poster_path.exists() {
+            let client = reqwest::Client::new();
+            let img_bytes = client
+                .get(&video.thumbnail_url)
+                .send()
+                .await
+                .map_err(|e| anyhow!("Failed to fetch thumbnail: {}", e))?
+                .bytes()
+                .await
+                .map_err(|e| anyhow!("Failed to read thumbnail bytes: {}", e))?;
 
-        std::fs::write(video_dir.join("poster.jpg"), img_bytes)
-            .map_err(|e| anyhow!("Failed to write thumbnail file: {}", e))?;
+            std::fs::write(&poster_path, img_bytes)
+                .map_err(|e| anyhow!("Failed to write channel poster: {}", e))?;
+        }
 
         // Pre-cache manifest
         self.cache_manifest(video.id.as_str(), &config.jellyfin_media_path)
@@ -200,11 +259,29 @@ pub async fn check_channels(config: Arc<RwLock<Config>>) -> Result<()> {
             match channel.scan_videos().await {
                 Ok(videos) => {
                     for video in videos {
-                        if !channel.media_dir.join(&video.id).exists() {
-                            info!("New video found: {} ({})", video.title, video.id);
-                            if let Err(e) = channel.create_media_files(&video, &config_guard).await
-                            {
-                                error!("Failed to create media files: {}", e);
+                        // Get season directory from upload date
+                        if let Ok(season) = channel.get_season_from_date(&video.upload_date) {
+                            let season_dir = channel.media_dir.join(format!("Season {}", season));
+                            let episode_base = format!("{} - {}", video.upload_date, video.title);
+                            let safe_filename = episode_base
+                                .chars()
+                                .map(|c| {
+                                    if c.is_ascii_alphanumeric() || c == '-' || c == ' ' {
+                                        c
+                                    } else {
+                                        '_'
+                                    }
+                                })
+                                .collect::<String>();
+
+                            // Check if video exists in its season directory
+                            if !season_dir.join(format!("{}.strm", safe_filename)).exists() {
+                                info!("New video found: {} ({})", video.title, video.id);
+                                if let Err(e) =
+                                    channel.create_media_files(&video, &config_guard).await
+                                {
+                                    error!("Failed to create media files: {}", e);
+                                }
                             }
                         }
                     }
