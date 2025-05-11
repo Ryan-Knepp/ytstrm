@@ -77,13 +77,14 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn stream_youtube(Path(video_id): Path<String>) -> Response {
+async fn stream_youtube(
+    State(state): State<AppStateArc>,
+    Path(video_id): Path<String>,
+) -> Response {
     info!("Streaming video: {}", video_id);
 
-    let cache_dir = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("ytstrm/manifests");
-    info!("Cache directory: {:?}", cache_dir);
+    let config = state.config.read().await;
+    let cache_dir = PathBuf::from(&config.jellyfin_media_path).join("manifests");
 
     // Try to load from cache first
     if let Ok(cache) = ManifestCache::load(&video_id, &cache_dir) {
