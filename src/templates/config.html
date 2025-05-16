@@ -40,16 +40,16 @@ Configuration{%endblock %} {% block content %}
         <h3 class="font-medium text-slate-800">{{ channel.name }}</h3>
         <p class="text-sm text-slate-500">{{ channel.handle }}</p>
       </div>
-      <div class="flex items-center gap-4">
+      <div class="flex items-center gap-2">
         <button
-          class="text-purple-600 hover:text-purple-800"
+          class="inline-flex items-center px-3 py-2 text-sm font-medium text-white bg-purple-600 rounded-md hover:bg-purple-700 cursor-pointer"
           hx-post="/api/channels/{{ channel.id }}/load"
           hx-swap="outerHTML"
           hx-target="closest div"
         >
-          <div class="htmx-indicator">
+          <div class="htmx-indicator mr-2">
             <svg
-              class="animate-spin h-5 w-5"
+              class="animate-spin h-4 w-4"
               xmlns="http://www.w3.org/2000/svg"
               fill="none"
               viewBox="0 0 24 24"
@@ -69,13 +69,27 @@ Configuration{%endblock %} {% block content %}
               ></path>
             </svg>
           </div>
-          <span class="htmx-indicator-text">Load Videos</span>
+          <span>Load Videos</span>
         </button>
+
         <a
           href="/channels/{{ channel.id }}"
-          class="text-purple-600 hover:text-purple-800"
+          class="inline-flex items-center px-3 py-2 text-sm font-medium text-purple-600 border border-purple-600 rounded-md hover:bg-purple-50"
         >
-          Edit
+          <svg
+            class="w-4 h-4 mr-2"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+            />
+          </svg>
+          <span>Edit</span>
         </a>
       </div>
     </div>
