@@ -8,7 +8,6 @@ use tokio::process::Command;
 use tracing::info;
 
 use crate::ConfigState;
-use crate::config::Config;
 
 pub struct ManifestCache {
     pub video_id: String,
