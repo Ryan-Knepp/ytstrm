@@ -329,7 +329,7 @@ impl Channel {
         }
 
         // Pre-cache manifest
-        self.cache_manifest(video.id.as_str(), &config)
+        self.cache_manifest(video.id.as_str(), config)
             .await
             .map_err(|e| anyhow!("Failed to cache manifest: {}", e))?;
 
@@ -368,7 +368,7 @@ impl Channel {
             }
 
             // Cache manifest regardless of whether the video is new
-            self.cache_manifest(&video.id, &config).await?;
+            self.cache_manifest(&video.id, config).await?;
         }
 
         Ok(new_videos)

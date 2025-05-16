@@ -33,7 +33,7 @@ pub async fn update_server_address(
         form.server_address.clone()
     };
 
-    if let Err(_) = Url::parse(&url_str) {
+    if Url::parse(&url_str).is_err() {
         return Html(
             state
                 .templates

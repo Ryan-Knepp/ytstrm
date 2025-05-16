@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 use tracing::info;
@@ -52,19 +52,19 @@ impl ManifestCache {
         self.expires > (now + 300)
     }
 
-    pub fn save(&self, cache_dir: &PathBuf) -> std::io::Result<()> {
+    pub fn save(&self, cache_dir: &Path) -> std::io::Result<()> {
         fs::create_dir_all(cache_dir)?;
         let path = cache_dir.join(format!("{}.m3u8", self.video_id));
         fs::write(path, &self.content)
     }
 
-    pub fn save_original(&self, cache_dir: &PathBuf) -> std::io::Result<()> {
+    pub fn save_original(&self, cache_dir: &Path) -> std::io::Result<()> {
         fs::create_dir_all(cache_dir)?;
         let path = cache_dir.join(format!("{}.original.m3u8", self.video_id));
         fs::write(path, &self.content)
     }
 
-    pub fn load(video_id: &str, cache_dir: &PathBuf) -> std::io::Result<Self> {
+    pub fn load(video_id: &str, cache_dir: &Path) -> std::io::Result<Self> {
         let path = cache_dir.join(format!("{}.m3u8", video_id));
         let content = fs::read_to_string(path)?;
         Ok(Self::new(video_id, content))
@@ -73,7 +73,7 @@ impl ManifestCache {
 
 pub async fn fetch_and_filter_manifest(
     video_id: &str,
-    cache_dir: &PathBuf,
+    cache_dir: &Path,
     save_cache: bool,
 ) -> Result<String> {
     let url = format!("https://www.youtube.com/watch?v={}", video_id);
@@ -178,12 +178,10 @@ pub fn filter_and_modify_manifest(content: String) -> String {
                 } else if high_audio_default.is_none() {
                     high_audio_backup = Some(line);
                 }
-            } else {
-                if is_default {
-                    sd_audio_default = Some(line);
-                } else if sd_audio_default.is_none() {
-                    sd_audio_backup = Some(line);
-                }
+            } else if is_default {
+                sd_audio_default = Some(line);
+            } else if sd_audio_default.is_none() {
+                sd_audio_backup = Some(line);
             }
         }
         i += 1;
