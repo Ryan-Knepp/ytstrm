@@ -219,6 +219,15 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
     loop {
         info!("Starting manifest cache maintenance...");
         let config_guard = config.read().await;
+
+        // Skip maintenance if no channels are configured
+        if config_guard.channels.is_empty() {
+            info!("No channels configured, skipping manifest maintenance");
+            drop(config_guard);
+            tokio::time::sleep(tokio::time::Duration::from_secs(900)).await;
+            continue;
+        }
+
         let cache_dir = PathBuf::from(&config_guard.jellyfin_media_path).join("manifests");
 
         // Create manifests directory and .ignore file if they don't exist
