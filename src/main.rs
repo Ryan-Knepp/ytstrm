@@ -2,12 +2,13 @@ mod api;
 mod channel;
 mod config;
 mod manifest;
+mod migrations;
 mod templates;
 
 use axum::extract::State;
 use axum::response::Html;
 use axum::{Router, extract::Path, response::Response, routing::get};
-use config::{Config, check_channels};
+use config::{Config, Source, check_channels};
 use std::process::Stdio;
 use std::{path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
@@ -44,6 +45,11 @@ async fn main() {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
             .init();
+    }
+
+    if let Err(e) = migrations::run_migrations() {
+        info!("Failed to run migrations: {}", e);
+        return;
     }
 
     let config = Arc::new(RwLock::new(Config::load().unwrap()));
@@ -186,14 +192,33 @@ async fn direct_mp4_streaming(url: &str, video_id: &str) -> Response {
 
 async fn index_handler(State(state): State<AppStateArc>) -> Result<Html<String>, ()> {
     let config_guard = state.config.read().await;
+
+    // Filter channels and playlists
+    let channels: Vec<_> = config_guard
+        .channels
+        .iter()
+        .filter(|c| matches!(&c.source, Source::Channel { .. }))
+        .collect();
+
+    let playlists: Vec<_> = config_guard
+        .channels
+        .iter()
+        .filter(|c| matches!(&c.source, Source::Playlist { .. }))
+        .collect();
+
     let html = state
         .templates
         .render(
             "config.html",
             minijinja::context! {
                 config => &*config_guard,
+                channels => channels,
+                playlists => playlists,
             },
         )
-        .map_err(|_| ())?;
+        .map_err(|err| {
+            info!("Failed to render template: {}", err);
+            ()
+        })?;
     Ok(Html(html))
 }

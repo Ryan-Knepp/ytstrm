@@ -1,4 +1,5 @@
 pub mod channels;
+pub mod playlist;
 pub mod settings;
 
 use crate::AppStateArc;
@@ -24,4 +25,8 @@ pub fn routes() -> Router<AppStateArc> {
         .route("/channels/{id}", put(channels::update_channel))
         .route("/channels/{id}", delete(channels::delete_channel))
         .route("/channels/{id}/load", post(channels::load_channel_videos))
+        .route("/playlists/new", post(playlist::create_playlist))
+        .route("/playlists/{id}", put(playlist::update_playlist))
+        .route("/playlists/{id}", delete(playlist::delete_playlist))
+        .route("/playlists/{id}/load", post(playlist::load_playlist_videos))
 }

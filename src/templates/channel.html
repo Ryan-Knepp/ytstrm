@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Youtube Strmer - {{ channel.name if channel else "New Channel" }}{% endblock %}
+{% block title %}Youtube Strmer - {{ channel.source.name if channel else "New Channel" }}{% endblock %}
 
 {% block content %}
 <div class="max-w-2xl mx-auto">
@@ -24,7 +24,7 @@
           <input
             type="text"
             name="name"
-            value="{{ channel.name if channel else "" }}"
+            value="{{ channel.source.name if channel else "" }}"
             class="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
             required
           />
@@ -35,7 +35,7 @@
           <input
             type="text"
             name="handle"
-            value="{{ channel.handle if channel else "" }}"
+            value="{{ channel.source.handle if channel else "" }}"
             class="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
             required
           />
@@ -47,7 +47,7 @@
           <input
             type="number"
             name="max_videos"
-            value="{{ channel.max_videos if channel and channel.max_videos else "" }}"
+            value="{{ channel.source.max_videos if channel and channel.source.max_videos else "" }}"
             class="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
           />
           <p class="mt-1 text-sm text-slate-500">Optional: Limit the number of videos to keep</p>
@@ -58,7 +58,7 @@
           <input
             type="number"
             name="max_age_days"
-            value="{{ channel.max_age_days if channel and channel.max_age_days else "" }}"
+            value="{{ channel.source.max_age_days if channel and channel.source.max_age_days else "" }}"
             class="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-purple-500 focus:ring-purple-500"
           />
           <p class="mt-1 text-sm text-slate-500">Optional: Only keep videos newer than this many days</p>

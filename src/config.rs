@@ -9,14 +9,26 @@ use crate::ConfigState;
 use crate::manifest::fetch_and_filter_manifest;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum Source {
+    Channel {
+        handle: String,
+        name: String,
+        max_videos: Option<usize>,
+        max_age_days: Option<u32>,
+    },
+    Playlist {
+        id: String,
+        name: String,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Channel {
     pub id: String,
-    pub handle: String,
-    pub name: String,
+    pub source: Source,
     pub last_checked: SystemTime,
     pub media_dir: PathBuf,
-    pub max_videos: Option<usize>, // Maximum number of videos to keep
-    pub max_age_days: Option<u32>, // Maximum age of videos in days
 }
 
 #[derive(Debug)]
@@ -43,31 +55,46 @@ pub struct VideoInfo {
 
 impl Channel {
     pub async fn scan_videos(&self) -> Result<Vec<VideoInfo>> {
-        let handle = self.handle.trim_start_matches('@');
-        let url = format!("https://www.youtube.com/@{}/videos", handle);
+        let url = self.get_url("videos");
+
         info!("Fetching videos from URL: {}", url);
 
+        let mut args = vec![
+            "--compat-options".to_string(),
+            "no-youtube-channel-redirect".to_string(),
+            "--compat-options".to_string(),
+            "no-youtube-unavailable-videos".to_string(),
+            "--no-warnings".to_string(),
+            "--dump-json".to_string(),
+            "--ignore-errors".to_string(),
+            "--cookies".to_string(),
+            "cookies.txt".to_string(),
+        ];
+
+        // Only apply date/count filtering for channels, not playlists
+        if let Source::Channel {
+            max_age_days,
+            max_videos,
+            ..
+        } = &self.source
+        {
+            if let Some(days) = max_age_days {
+                args.push("--dateafter".to_string());
+                args.push(format!("today-{}days", days));
+            }
+
+            if let Some(count) = max_videos {
+                args.push("--playlist-start".to_string());
+                args.push("1".to_string());
+                args.push("--playlist-end".to_string());
+                args.push(count.to_string());
+            }
+        }
+
+        args.push(url);
+
         let output = Command::new("yt-dlp")
-            .args([
-                "--compat-options",
-                "no-youtube-channel-redirect",
-                "--compat-options",
-                "no-youtube-unavailable-videos",
-                "--dateafter",
-                &self
-                    .max_age_days
-                    .map(|days| format!("today-{}days", days))
-                    .unwrap_or_else(|| "19700101".to_string()),
-                "--playlist-start",
-                "1",
-                "--playlist-end",
-                &self.max_videos.unwrap_or(50).to_string(),
-                "--no-warnings",
-                "--dump-json", // Changed from -j to --dump-json
-                "--cookies",
-                "cookies.txt",
-                &url,
-            ])
+            .args(&args)
             .output()
             .await
             .map_err(|e| anyhow!("Failed to execute yt-dlp: {}", e))?;
@@ -76,17 +103,20 @@ impl Channel {
         let debug_dir = PathBuf::from("debug");
         std::fs::create_dir_all(&debug_dir)?;
         std::fs::write(
-            debug_dir.join(format!("{}_video_list.json", self.handle)),
+            debug_dir.join(format!("{}_video_list.json", self.get_handle_or_id())),
             &output.stdout,
         )?;
 
-        if !output.status.success() {
+        // Save errors for debugging but don't fail
+        if !output.stderr.is_empty() {
             std::fs::write(
-                debug_dir.join(format!("{}_video_list_error.txt", self.handle)),
+                debug_dir.join(format!("{}_video_list_error.txt", self.get_handle_or_id())),
                 &output.stderr,
             )?;
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("yt-dlp failed: {}", stderr));
+            info!(
+                "Some videos were skipped: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
 
         let mut videos: Vec<VideoInfo> = output
@@ -123,15 +153,47 @@ impl Channel {
         videos.sort_by(|a, b| b.upload_date.cmp(&a.upload_date));
 
         // Limit number of videos if max_videos is set
-        if let Some(max_videos) = self.max_videos {
-            videos.truncate(max_videos);
+        if let Source::Channel { max_videos, .. } = &self.source {
+            if let Some(max_videos) = max_videos {
+                videos.truncate(*max_videos);
+            }
         }
 
         if videos.is_empty() {
-            return Err(anyhow!("No videos found for channel {}", self.handle));
+            return Err(anyhow!("No videos found for channel {}", self.get_name()));
         }
 
         Ok(videos)
+    }
+
+    pub fn get_name(&self) -> &str {
+        match &self.source {
+            Source::Channel { name, .. } => name,
+            Source::Playlist { name, .. } => name,
+        }
+    }
+
+    pub fn get_handle_or_id(&self) -> &str {
+        match &self.source {
+            Source::Channel { handle, .. } => handle,
+            Source::Playlist { id, .. } => id,
+        }
+    }
+
+    pub fn get_url(&self, command_type: &str) -> String {
+        match &self.source {
+            Source::Channel { handle, .. } => {
+                let handle = handle.trim_start_matches('@');
+                match command_type {
+                    "videos" => format!("https://www.youtube.com/@{}/videos", handle),
+                    "channel" => format!("https://www.youtube.com/@{}", handle),
+                    _ => panic!("Invalid command type"),
+                }
+            }
+            Source::Playlist { id, .. } => {
+                format!("https://www.youtube.com/playlist?list={}", id)
+            }
+        }
     }
 
     pub fn get_season_from_date(&self, upload_date: &str) -> Result<u32> {
@@ -143,8 +205,7 @@ impl Channel {
     }
 
     pub async fn get_channel_images(&self) -> Result<ChannelImages> {
-        let handle = self.handle.trim_start_matches('@');
-        let channel_url = format!("https://www.youtube.com/@{}", handle);
+        let channel_url = self.get_url("channel");
 
         let output = Command::new("yt-dlp")
             .args([
@@ -216,14 +277,25 @@ impl Channel {
         }
 
         // Create channel NFO file
-        let channel_nfo = format!(
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        let channel_nfo = match &self.source {
+            Source::Channel { name, handle, .. } => format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <tvshow>
     <title>{}</title>
     <plot>Videos from YouTube channel {}</plot>
 </tvshow>"#,
-            self.name, self.handle
-        );
+                name, handle
+            ),
+            Source::Playlist { name, .. } => format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<tvshow>
+    <title>{}</title>
+    <plot>Videos from YouTube playlist</plot>
+</tvshow>"#,
+                name
+            ),
+        };
+
         std::fs::write(self.media_dir.join("tvshow.nfo"), channel_nfo)
             .map_err(|e| anyhow!("Failed to write channel NFO file: {}", e))?;
 
@@ -428,10 +500,14 @@ pub async fn check_channels(config: ConfigState) -> Result<()> {
             match channel.process_new_videos(&config_guard).await {
                 Ok(count) => {
                     if count > 0 {
-                        info!("Added {} new videos for channel {}", count, channel.handle);
+                        info!(
+                            "Added {} new videos for channel {}",
+                            count,
+                            channel.get_name()
+                        );
                     }
                 }
-                Err(e) => error!("Failed to process channel {}: {}", channel.handle, e),
+                Err(e) => error!("Failed to process channel {}: {}", channel.get_name(), e),
             }
         }
 
