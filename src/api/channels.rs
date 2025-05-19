@@ -5,17 +5,21 @@ use axum::{
     response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
+use serde_with::{NoneAsEmptyString, serde_as};
 use std::time::SystemTime;
 use tracing::error;
 
 use crate::AppStateArc;
 use crate::config::{Channel, Source};
 
+#[serde_as]
 #[derive(Deserialize)]
 pub struct ChannelForm {
     name: String,
     handle: String,
+    #[serde_as(as = "NoneAsEmptyString")]
     max_videos: Option<usize>,
+    #[serde_as(as = "NoneAsEmptyString")]
     max_age_days: Option<u32>,
 }
 
