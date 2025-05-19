@@ -100,19 +100,19 @@ impl Channel {
             .map_err(|e| anyhow!("Failed to execute yt-dlp: {}", e))?;
 
         // Save output for debugging
-        let debug_dir = PathBuf::from("debug");
-        std::fs::create_dir_all(&debug_dir)?;
-        std::fs::write(
-            debug_dir.join(format!("{}_video_list.json", self.get_handle_or_id())),
-            &output.stdout,
-        )?;
+        // let debug_dir = PathBuf::from("debug");
+        // std::fs::create_dir_all(&debug_dir)?;
+        // std::fs::write(
+        //     debug_dir.join(format!("{}_video_list.json", self.get_handle_or_id())),
+        //     &output.stdout,
+        // )?;
 
         // Save errors for debugging but don't fail
         if !output.stderr.is_empty() {
-            std::fs::write(
-                debug_dir.join(format!("{}_video_list_error.txt", self.get_handle_or_id())),
-                &output.stderr,
-            )?;
+            // std::fs::write(
+            //     debug_dir.join(format!("{}_video_list_error.txt", self.get_handle_or_id())),
+            //     &output.stderr,
+            // )?;
             info!(
                 "Some videos were skipped: {}",
                 String::from_utf8_lossy(&output.stderr)
