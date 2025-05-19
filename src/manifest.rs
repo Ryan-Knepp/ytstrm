@@ -215,20 +215,31 @@ pub fn filter_and_modify_manifest(content: String) -> String {
     final_manifest
 }
 
+#[derive(Clone)]
+struct ManifestMaintenanceInfo {
+    jellyfin_media_path: PathBuf,
+}
+
 pub async fn maintain_manifest_cache(config: ConfigState) {
     loop {
-        info!("Starting manifest cache maintenance...");
-        let config_guard = config.read().await;
+        // Get config info with minimal lock time
+        let maintenance_info = {
+            let config_guard = config.read().await;
 
-        // Skip maintenance if no channels are configured
-        if config_guard.channels.is_empty() {
-            info!("No channels configured, skipping manifest maintenance");
-            drop(config_guard);
-            tokio::time::sleep(tokio::time::Duration::from_secs(900)).await;
-            continue;
-        }
+            // Skip maintenance if no channels are configured
+            if config_guard.channels.is_empty() {
+                info!("No channels configured, skipping manifest maintenance");
+                drop(config_guard);
+                tokio::time::sleep(tokio::time::Duration::from_secs(900)).await;
+                continue;
+            }
 
-        let cache_dir = PathBuf::from(&config_guard.jellyfin_media_path).join("manifests");
+            ManifestMaintenanceInfo {
+                jellyfin_media_path: config_guard.jellyfin_media_path.clone(),
+            }
+        };
+
+        let cache_dir = maintenance_info.jellyfin_media_path.join("manifests");
 
         // Create manifests directory and .ignore file if they don't exist
         if let Err(e) = fs::create_dir_all(&cache_dir) {
@@ -270,7 +281,6 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
             }
         }
 
-        drop(config_guard);
         tokio::time::sleep(tokio::time::Duration::from_secs(900)).await;
     }
 }

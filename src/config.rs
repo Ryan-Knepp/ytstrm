@@ -8,7 +8,7 @@ use tracing::{error, info};
 use crate::ConfigState;
 use crate::manifest::fetch_and_filter_manifest;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type")]
 pub enum Source {
     Channel {
@@ -23,7 +23,7 @@ pub enum Source {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Channel {
     pub id: String,
     pub source: Source,
@@ -488,31 +488,58 @@ impl Config {
     }
 }
 
+#[derive(Clone)]
+struct ChannelCheckInfo {
+    name: String,
+    channel: Channel,
+    jellyfin_media_path: PathBuf,
+    server_address: String,
+}
+
 pub async fn check_channels(config: ConfigState) -> Result<()> {
     loop {
-        let config_guard = config.read().await;
-        info!(
-            "Checking {} channels for new videos",
-            config_guard.channels.len()
-        );
+        // Get channels and config info with minimal lock time
+        let check_info: Vec<ChannelCheckInfo> = {
+            let config_guard = config.read().await;
+            config_guard
+                .channels
+                .iter()
+                .map(|channel| ChannelCheckInfo {
+                    name: channel.get_name().to_string(),
+                    channel: channel.clone(),
+                    jellyfin_media_path: config_guard.jellyfin_media_path.clone(),
+                    server_address: config_guard.server_address.clone(),
+                })
+                .collect()
+        };
 
-        for channel in &config_guard.channels {
-            match channel.process_new_videos(&config_guard).await {
+        info!("Checking {} channels for new videos", check_info.len());
+
+        // Process each channel with temporary config
+        for info in check_info {
+            let temp_config = Config {
+                channels: vec![],  // Not needed for processing
+                check_interval: 0, // Not needed for processing
+                jellyfin_media_path: info.jellyfin_media_path,
+                server_address: info.server_address,
+            };
+
+            match info.channel.process_new_videos(&temp_config).await {
                 Ok(count) => {
                     if count > 0 {
-                        info!(
-                            "Added {} new videos for channel {}",
-                            count,
-                            channel.get_name()
-                        );
+                        info!("Added {} new videos for channel {}", count, info.name);
                     }
                 }
-                Err(e) => error!("Failed to process channel {}: {}", channel.get_name(), e),
+                Err(e) => error!("Failed to process channel {}: {}", info.name, e),
             }
         }
 
-        let sleep_duration = config_guard.check_interval * 60;
-        drop(config_guard);
+        // Get sleep duration with minimal lock time
+        let sleep_duration = {
+            let config_guard = config.read().await;
+            config_guard.check_interval * 60
+        };
+
         tokio::time::sleep(Duration::from_secs(sleep_duration)).await;
     }
 }
