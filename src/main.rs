@@ -74,7 +74,6 @@ async fn main() {
         .route("/", get(index_handler))
         .merge(channel::routes())
         .route("/stream/{id}", get(stream_youtube))
-        .route("/youtube/direct/{id}", get(stream_youtube))
         .nest("/api", api::routes())
         .with_state(app_state);
 
