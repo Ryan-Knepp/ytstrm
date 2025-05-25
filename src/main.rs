@@ -8,7 +8,9 @@ mod templates;
 use axum::extract::State;
 use axum::response::Html;
 use axum::{Router, extract::Path, response::Response, routing::get};
-use config::{Config, Source, check_channels};
+use config::{Channel, Config, Source, check_channels};
+use serde::Serialize;
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::{path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
@@ -35,7 +37,7 @@ async fn main() {
     // Initialize logging
     if IS_DEV {
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::INFO)
             .with_target(true)
             .with_thread_ids(true)
             .with_file(true)
@@ -189,20 +191,61 @@ async fn direct_mp4_streaming(url: &str, video_id: &str) -> Response {
         .unwrap()
 }
 
+#[derive(Debug, Serialize)]
+struct ChannelWithCount<'a> {
+    channel: &'a Channel,
+    video_count: usize,
+}
+
 async fn index_handler(State(state): State<AppStateArc>) -> Result<Html<String>, ()> {
     let config_guard = state.config.read().await;
 
+    // Count .strm files in each channel's directory
+    let mut video_counts: HashMap<String, usize> = HashMap::new();
+
+    for channel in &config_guard.channels {
+        let mut count = 0;
+        if let Ok(seasons) = std::fs::read_dir(&channel.media_dir) {
+            for season in seasons.flatten() {
+                if season.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    if let Ok(files) = std::fs::read_dir(season.path()) {
+                        count += files
+                            .flatten()
+                            .filter(|entry| {
+                                entry
+                                    .path()
+                                    .extension()
+                                    .and_then(|ext| ext.to_str())
+                                    .map(|ext| ext == "strm")
+                                    .unwrap_or(false)
+                            })
+                            .count();
+                    }
+                }
+            }
+        }
+        video_counts.insert(channel.id.clone(), count);
+    }
+
     // Filter channels and playlists
-    let channels: Vec<_> = config_guard
+    let channels: Vec<ChannelWithCount> = config_guard
         .channels
         .iter()
         .filter(|c| matches!(&c.source, Source::Channel { .. }))
+        .map(|c| ChannelWithCount {
+            channel: c,
+            video_count: video_counts.get(&c.id).copied().unwrap_or(0),
+        })
         .collect();
 
-    let playlists: Vec<_> = config_guard
+    let playlists: Vec<ChannelWithCount> = config_guard
         .channels
         .iter()
         .filter(|c| matches!(&c.source, Source::Playlist { .. }))
+        .map(|c| ChannelWithCount {
+            channel: c,
+            video_count: video_counts.get(&c.id).copied().unwrap_or(0),
+        })
         .collect();
 
     let html = state

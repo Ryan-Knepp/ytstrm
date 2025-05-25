@@ -42,6 +42,19 @@ pub async fn create_channel(
             .into_response();
     }
 
+    // Set initial last_checked based on max_age_days
+    let last_checked = match form.max_age_days {
+        Some(days) => {
+            let now = chrono::Utc::now();
+            let past_date = now - chrono::Duration::days(days as i64);
+            SystemTime::from(past_date)
+        }
+        None => {
+            // Set to Unix epoch (1970-01-01) to get all available videos
+            SystemTime::UNIX_EPOCH
+        }
+    };
+
     let new_channel = Channel {
         id: form.handle.clone(),
         source: Source::Channel {
@@ -50,7 +63,7 @@ pub async fn create_channel(
             max_videos: form.max_videos,
             max_age_days: form.max_age_days,
         },
-        last_checked: SystemTime::now(),
+        last_checked,
         media_dir: config.jellyfin_media_path.join(&form.handle),
     };
 
@@ -129,47 +142,70 @@ pub async fn load_channel_videos(
     State(state): State<AppStateArc>,
     Path(id): Path<String>,
 ) -> Response {
-    let config = state.config.read().await;
+    // Get channel info and config values needed for processing
+    let (channel, media_path, server_addr) = {
+        let mut config = state.config.write().await;
 
-    if let Some(channel) = config.channels.iter().find(|c| c.id == id) {
-        if !matches!(&channel.source, Source::Channel { .. }) {
-            return (StatusCode::BAD_REQUEST, "Not a channel entry").into_response();
-        }
+        if let Some(channel) = config.channels.iter().find(|c| c.id == id) {
+            if !matches!(&channel.source, Source::Channel { .. }) {
+                return (StatusCode::BAD_REQUEST, "Not a channel entry").into_response();
+            }
 
-        match channel.process_new_videos(&config).await {
-            Ok(new_videos) => {
-                Html(format!(r#"
-                <div class="flex justify-between items-center border border-slate-200 rounded p-4 hover:bg-slate-50">
-                    <div>
-                        <h3 class="font-medium text-slate-800">{}</h3>
-                        <p class="text-sm text-slate-500">{}</p>
-                        <p class="text-sm text-green-600 mt-1">Found {} new videos</p>
-                    </div>
-                    <div class="flex items-center gap-4">
-                        <button
-                            class="text-purple-600 hover:text-purple-800"
-                            hx-post="/api/channels/{}/load"
-                            hx-swap="outerHTML"
-                            hx-target="closest div"
-                        >
-                            <span>Load Videos</span>
-                        </button>
-                        <a 
-                            href="/channels/{}"
-                            class="text-purple-600 hover:text-purple-800"
-                        >
-                            Edit
-                        </a>
-                    </div>
-                </div>
-                "#, channel.get_name(), channel.get_handle_or_id(), new_videos, channel.id, channel.id)).into_response()
+            // Delete existing channel directory
+            if let Err(e) = std::fs::remove_dir_all(&channel.media_dir) {
+                error!("Failed to delete channel directory: {}", e);
             }
-            Err(e) => {
-                error!("Failed to scan channel: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to scan channel").into_response()
+
+            let mut channel = channel.clone();
+
+            // Reset last_checked on our local copy
+            if let Source::Channel { max_age_days, .. } = &channel.source {
+                channel.last_checked = match max_age_days {
+                    Some(days) => {
+                        let now = chrono::Utc::now();
+                        let past_date = now - chrono::Duration::days(*days as i64);
+                        SystemTime::from(past_date)
+                    }
+                    None => SystemTime::UNIX_EPOCH,
+                };
             }
+
+            // Save the updated channel
+            if let Some(existing_channel) = config.channels.iter_mut().find(|c| c.id == id) {
+                *existing_channel = channel.clone();
+            }
+            if let Err(e) = config.save() {
+                error!("Failed to save config: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to save configuration",
+                )
+                    .into_response();
+            }
+
+            (
+                channel,
+                config.jellyfin_media_path.clone(),
+                config.server_address.clone(),
+            )
+        } else {
+            return (StatusCode::NOT_FOUND, "Channel not found").into_response();
         }
-    } else {
-        (StatusCode::NOT_FOUND, "Channel not found").into_response()
+    }; // Config lock is dropped here
+
+    // Process videos without holding any locks
+    match channel
+        .process_new_videos(&media_path, &server_addr, &state.config)
+        .await
+    {
+        Ok(new_videos) => Html(format!("{} videos", new_videos)).into_response(),
+        Err(e) => {
+            error!("Failed to scan channel: {}", e);
+            Html("Failed to load videos").into_response()
+        }
     }
 }
+
+// Executing yt-dlp with args: ["--compat-options", "no-youtube-channel-redirect", "--compat-options", "no-youtube-unavailable-videos", "--no-warnings", "--dump-json", "--ignore-errors", "--cookies", "cookies.txt", "--dateafter", "20240109", "--dateafter", "today-500days", "--playlist-start", "1", "--playlist-end", "5", "https://www.youtube.com/@dudeperfect/videos"]
+
+// Executing yt-dlp with args: ["--compat-options", "no-youtube-channel-redirect", "--compat-options", "no-youtube-unavailable-videos", "--no-warnings", "--dump-json", "--ignore-errors", "--cookies", "cookies.txt", "--dateafter", "19691230", "https://www.youtube.com/playlist?list=PLCsuqbR8ZoiAkjk2dD10u-gigxGZw3am5"]

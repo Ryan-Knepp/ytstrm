@@ -3,7 +3,7 @@ use reqwest::Client;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 use tracing::info;
 
@@ -85,8 +85,31 @@ pub async fn fetch_and_filter_manifest(
         .await
         .map_err(|e| anyhow!("Failed to execute yt-dlp: {}", e))?;
 
-    let metadata: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| anyhow!("Failed to parse metadata JSON: {}", e))?;
+    // Check if yt-dlp succeeded and output isn't empty
+    if !output.status.success() {
+        return Err(anyhow!(
+            "yt-dlp failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    if output.stdout.is_empty() {
+        return Err(anyhow!("yt-dlp returned no data"));
+    }
+
+    // Debug log the output
+    info!("yt-dlp stdout: {}", String::from_utf8_lossy(&output.stdout));
+    if !output.stderr.is_empty() {
+        info!("yt-dlp stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    let metadata: Value = serde_json::from_slice(&output.stdout).map_err(|e| {
+        anyhow!(
+            "Failed to parse metadata JSON: {} (stdout: {:?})",
+            e,
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })?;
 
     // Get first manifest URL
     let manifest_url = metadata["formats"]
@@ -234,6 +257,13 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
                 continue;
             }
 
+            if config_guard.background_tasks_paused {
+                info!("Background tasks are paused, sleeping for 10 minutes");
+                drop(config_guard);
+                tokio::time::sleep(Duration::from_secs(600)).await;
+                continue;
+            }
+
             ManifestMaintenanceInfo {
                 jellyfin_media_path: config_guard.jellyfin_media_path.clone(),
             }
@@ -255,6 +285,8 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
         }
 
         if let Ok(files) = fs::read_dir(&cache_dir) {
+            let mut count = 0;
+            let mut files_count = 0;
             for file in files.flatten() {
                 if let Some(file_name) = file.file_name().to_str() {
                     if !file_name.ends_with(".m3u8") {
@@ -263,6 +295,7 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
 
                     let video_id = file_name.trim_end_matches(".m3u8");
                     if let Ok(cache) = ManifestCache::load(video_id, &cache_dir) {
+                        files_count += 1;
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .unwrap()
@@ -270,6 +303,7 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
 
                         if cache.expires < (now + 1800) {
                             info!("Refreshing manifest for {}", video_id);
+                            count += 1;
                             if let Err(e) =
                                 fetch_and_filter_manifest(video_id, &cache_dir, true).await
                             {
@@ -279,6 +313,10 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
                     }
                 }
             }
+            info!(
+                "Checked {} manifest files, refreshed {} expired manifests",
+                files_count, count
+            );
         }
 
         tokio::time::sleep(tokio::time::Duration::from_secs(900)).await;

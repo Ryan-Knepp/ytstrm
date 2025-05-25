@@ -1,3 +1,4 @@
+use axum::http::StatusCode;
 use axum::response::Html;
 use axum::{Form, extract::State, response::IntoResponse};
 use minijinja::context;
@@ -174,5 +175,32 @@ pub async fn update_media_path(
             )
             .unwrap(),
     )
+    .into_response()
+}
+
+pub async fn toggle_background_tasks(State(state): State<AppStateArc>) -> impl IntoResponse {
+    let mut config = state.config.write().await;
+    let new_state = !config.background_tasks_paused;
+
+    if let Err(e) = config.set_background_tasks_paused(new_state) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    Html(format!(
+        r#"
+        <button
+            hx-post="/api/config/toggle-background-tasks"
+            hx-swap="outerHTML"
+            class="px-4 py-2 rounded-md font-medium {}">
+            {} Background Tasks
+        </button>
+    "#,
+        if new_state {
+            "bg-yellow-500 hover:bg-yellow-600 text-white"
+        } else {
+            "bg-green-500 hover:bg-green-600 text-white"
+        },
+        if new_state { "Resume" } else { "Pause" }
+    ))
     .into_response()
 }

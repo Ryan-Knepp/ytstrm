@@ -20,6 +20,10 @@ pub fn routes() -> Router<AppStateArc> {
             put(settings::update_check_interval),
         )
         .route("/config/media-path", put(settings::update_media_path))
+        .route(
+            "/config/toggle-background-tasks",
+            post(settings::toggle_background_tasks),
+        )
         // Channel routes
         .route("/channels/new", post(channels::create_channel))
         .route("/channels/{id}", put(channels::update_channel))

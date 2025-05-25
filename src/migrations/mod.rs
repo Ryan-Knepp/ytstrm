@@ -8,7 +8,7 @@ pub fn run_migrations() -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("/etc"))
         .join("ytstrm");
     if config_path.exists() {
-        config_to_v2::migrate_v1_to_v2(&config_path)?;
+        config_to_v2::migrate_config(&config_path)?;
     }
 
     Ok(())

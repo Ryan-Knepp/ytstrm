@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.98"
 axum = "0.8"
+chrono = "0.4.41"
 dirs = "6.0.0"
 futures = "0.3"
 minijinja = { version = "2.10.2", features = ["loader"] }

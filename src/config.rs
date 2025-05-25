@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use chrono::{DateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use std::{path::PathBuf, time::Duration};
@@ -43,6 +44,7 @@ pub struct Config {
     pub check_interval: u64, // In minutes
     pub jellyfin_media_path: PathBuf,
     pub server_address: String,
+    pub background_tasks_paused: bool,
 }
 
 pub struct VideoInfo {
@@ -54,6 +56,43 @@ pub struct VideoInfo {
 }
 
 impl Channel {
+    pub async fn process_new_videos(
+        &self,
+        jellyfin_media_path: &PathBuf,
+        server_address: &str,
+        config_state: &ConfigState,
+    ) -> Result<usize> {
+        let videos = self.scan_videos().await?;
+        let mut new_videos = 0;
+
+        for video in &videos {
+            match self
+                .process_video(video, jellyfin_media_path, server_address)
+                .await
+            {
+                Ok(true) => new_videos += 1,
+                Ok(false) => {} // Video already exists
+                Err(e) => error!("Failed to process video {}: {}", video.id, e),
+            }
+        }
+
+        info!(
+            "Processed {} new videos for channel {}",
+            new_videos,
+            self.get_name()
+        );
+
+        // Always update last_checked time
+        let mut config = config_state.write().await;
+        if let Some(channel) = config.channels.iter_mut().find(|c| c.id == self.id) {
+            let now = chrono::Utc::now();
+            channel.last_checked = SystemTime::from(now);
+            config.save()?;
+        }
+
+        Ok(new_videos)
+    }
+
     pub async fn scan_videos(&self) -> Result<Vec<VideoInfo>> {
         let url = self.get_url("videos");
 
@@ -71,18 +110,42 @@ impl Channel {
             "cookies.txt".to_string(),
         ];
 
-        // Only apply date/count filtering for channels, not playlists
-        if let Source::Channel {
-            max_age_days,
-            max_videos,
-            ..
-        } = &self.source
-        {
-            if let Some(days) = max_age_days {
-                args.push("--dateafter".to_string());
-                args.push(format!("today-{}days", days));
-            }
+        // Set date filtering based on last_checked for both channels and playlists
+        let mut date_after = None;
 
+        // Check last_checked date (minus 2 days for safety)
+        if let Ok(duration) = self.last_checked.elapsed() {
+            if duration.as_secs() > 0 {
+                let last_check_date = chrono::DateTime::from(self.last_checked);
+                date_after = Some(last_check_date - chrono::Duration::days(2));
+            }
+        }
+
+        // For channels, also consider max_age_days
+        if let Source::Channel { max_age_days, .. } = &self.source {
+            if let Some(days) = max_age_days {
+                let now = chrono::Utc::now();
+                let max_age_date = now - chrono::Duration::days(*days as i64);
+
+                // Use max_age_date if it's more recent than last_checked
+                if let Some(current_date) = date_after {
+                    if max_age_date > current_date {
+                        date_after = Some(max_age_date);
+                    }
+                } else {
+                    date_after = Some(max_age_date);
+                }
+            }
+        }
+
+        // Add the date filter if we have one
+        if let Some(date) = date_after {
+            args.push("--dateafter".to_string());
+            args.push(date.format("%Y%m%d").to_string());
+        }
+
+        // Apply max_videos limit for channels
+        if let Source::Channel { max_videos, .. } = &self.source {
             if let Some(count) = max_videos {
                 args.push("--playlist-start".to_string());
                 args.push("1".to_string());
@@ -92,6 +155,9 @@ impl Channel {
         }
 
         args.push(url);
+
+        // print out the command for debugging
+        info!("Executing yt-dlp with args: {:?}", args);
 
         let output = Command::new("yt-dlp")
             .args(&args)
@@ -205,7 +271,10 @@ impl Channel {
     }
 
     pub async fn get_channel_images(&self) -> Result<ChannelImages> {
-        let channel_url = self.get_url("channel");
+        let url = match &self.source {
+            Source::Channel { .. } => self.get_url("channel"),
+            Source::Playlist { id, .. } => format!("https://www.youtube.com/playlist?list={}", id),
+        };
 
         let output = Command::new("yt-dlp")
             .args([
@@ -215,7 +284,7 @@ impl Channel {
                 "--no-warnings",
                 "--playlist-items",
                 "0",
-                &channel_url,
+                &url,
             ])
             .output()
             .await
@@ -224,105 +293,47 @@ impl Channel {
         let output_str = String::from_utf8_lossy(&output.stdout);
 
         // Save output for debugging
-        info!("yt-dlp output:\n{}", output_str);
+        // info!("yt-dlp output:\n{}", output_str);
 
         let mut poster = None;
         let mut landscape = None;
 
+        // Parse thumbnail lines
         for line in output_str.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 4 {
-                // Find the URL part - it's always the last part
                 if let Some(url) = parts.last() {
-                    if parts[0] == "avatar_uncropped" {
-                        poster = Some(url.to_string());
-                    } else if parts[0] == "banner_uncropped" {
-                        landscape = Some(url.to_string());
+                    match &self.source {
+                        Source::Channel { .. } => {
+                            // Channel image logic
+                            if parts[0] == "avatar_uncropped" {
+                                poster = Some(url.to_string());
+                            } else if parts[0] == "banner_uncropped" {
+                                landscape = Some(url.to_string());
+                            }
+                        }
+                        Source::Playlist { .. } => {
+                            // For playlists, use the highest resolution thumbnail
+                            if let Ok(width) = parts[1].parse::<u32>() {
+                                if width >= 1280 {
+                                    poster = Some(url.to_string());
+                                    landscape = Some(url.to_string());
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        info!("Found poster URL: {:?}", poster);
-        info!("Found landscape URL: {:?}", landscape);
+        // info!("Found poster URL: {:?}", poster);
+        // info!("Found landscape URL: {:?}", landscape);
 
         Ok(ChannelImages { landscape, poster })
     }
 
-    async fn create_channel_structure(&self) -> Result<()> {
-        // Create main channel directory if it doesn't exist
-        std::fs::create_dir_all(&self.media_dir)?;
-
-        // Get channel images
-        if let Ok(images) = self.get_channel_images().await {
-            // Download poster
-            if let Some(poster_url) = images.poster {
-                let client = reqwest::Client::new();
-                if let Ok(response) = client.get(&poster_url).send().await {
-                    if let Ok(bytes) = response.bytes().await {
-                        let _ = std::fs::write(self.media_dir.join("poster.jpg"), bytes);
-                    }
-                }
-            }
-
-            // Download landscape/banner
-            if let Some(landscape_url) = images.landscape {
-                let client = reqwest::Client::new();
-                if let Ok(response) = client.get(&landscape_url).send().await {
-                    if let Ok(bytes) = response.bytes().await {
-                        let _ = std::fs::write(self.media_dir.join("landscape.jpg"), bytes);
-                    }
-                }
-            }
-        }
-
-        // Create channel NFO file
-        let channel_nfo = match &self.source {
-            Source::Channel { name, handle, .. } => format!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<tvshow>
-    <title>{}</title>
-    <plot>Videos from YouTube channel {}</plot>
-</tvshow>"#,
-                name, handle
-            ),
-            Source::Playlist { name, .. } => format!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<tvshow>
-    <title>{}</title>
-    <plot>Videos from YouTube playlist</plot>
-</tvshow>"#,
-                name
-            ),
-        };
-
-        std::fs::write(self.media_dir.join("tvshow.nfo"), channel_nfo)
-            .map_err(|e| anyhow!("Failed to write channel NFO file: {}", e))?;
-
-        Ok(())
-    }
-
-    pub async fn create_media_files(&self, video: &VideoInfo, config: &Config) -> Result<()> {
-        // Ensure channel structure exists
-        self.create_channel_structure().await?;
-
-        // Get season number from upload date
-        let season = self.get_season_from_date(&video.upload_date)?;
-        let season_dir = self.media_dir.join(format!("Season {}", season));
-        std::fs::create_dir_all(&season_dir)
-            .map_err(|e| anyhow!("Failed to create season directory: {}", e))?;
-
-        // Parse upload date (YYYYMMDD) into SYearEMonthDay format
-        let year = &video.upload_date[0..4];
-        let month = &video.upload_date[4..6];
-        let day = &video.upload_date[6..8];
-        let episode_prefix = format!("S{}E{}{}", year, month, day);
-
-        // Create episode filename from upload date and title
-        // Format: YYYYMMDD - Title.strm
-        let episode_base = format!("{} - {}", episode_prefix, video.title);
-        let safe_filename = episode_base
-            .chars()
+    fn create_safe_filename(&self, base: &str) -> String {
+        base.chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() || c == '-' || c == ' ' {
                     c
@@ -330,120 +341,142 @@ impl Channel {
                     '_'
                 }
             })
-            .collect::<String>();
+            .collect()
+    }
 
-        // Create episode image file
+    async fn download_image(&self, url: &str) -> Result<Vec<u8>> {
         let client = reqwest::Client::new();
-        let img_bytes = client
-            .get(&video.thumbnail_url)
+        client
+            .get(url)
             .send()
             .await
-            .map_err(|e| anyhow!("Failed to fetch episode thumbnail: {}", e))?
+            .map_err(|e| anyhow!("Failed to fetch image: {}", e))?
             .bytes()
             .await
-            .map_err(|e| anyhow!("Failed to read thumbnail bytes: {}", e))?;
+            .map(|b| b.to_vec())
+            .map_err(|e| anyhow!("Failed to read image bytes: {}", e))
+    }
 
-        std::fs::write(
+    fn write_file(&self, path: PathBuf, content: impl AsRef<[u8]>) -> Result<()> {
+        std::fs::write(&path, content)
+            .map_err(|e| anyhow!("Failed to write file {}: {}", path.display(), e))
+    }
+
+    async fn process_video(
+        &self,
+        video: &VideoInfo,
+        jellyfin_media_path: &PathBuf,
+        server_address: &str,
+    ) -> Result<bool> {
+        // Ensure channel structure exists
+        self.create_channel_structure().await?;
+
+        // Get season info and create directory
+        let season = self.get_season_from_date(&video.upload_date)?;
+        let season_dir = self.media_dir.join(format!("Season {}", season));
+
+        // Create base filename
+        let episode_base = format!("{} - {}", video.upload_date, video.title);
+        let safe_filename = self.create_safe_filename(&episode_base);
+
+        // Check if video already exists
+        if season_dir.join(format!("{}.strm", safe_filename)).exists() {
+            return Ok(false);
+        }
+
+        // Create season directory
+        std::fs::create_dir_all(&season_dir)
+            .map_err(|e| anyhow!("Failed to create season directory: {}", e))?;
+
+        // Download and save thumbnail
+        let img_bytes = self.download_image(&video.thumbnail_url).await?;
+        self.write_file(
             season_dir.join(format!("{}-thumb.jpg", safe_filename)),
             img_bytes,
-        )
-        .map_err(|e| anyhow!("Failed to write episode thumbnail: {}", e))?;
+        )?;
 
         // Create episode NFO
-        let nfo_content = format!(
+        let nfo_content = self.create_episode_nfo(video)?;
+        self.write_file(
+            season_dir.join(format!("{}.nfo", safe_filename)),
+            nfo_content,
+        )?;
+
+        // Create STRM file
+        let strm_content = format!(
+            "http://{}/stream/{}",
+            server_address.trim_start_matches("http://"),
+            video.id
+        );
+        self.write_file(
+            season_dir.join(format!("{}.strm", safe_filename)),
+            strm_content,
+        )?;
+
+        // Pre-cache manifest
+        let manifests_dir = PathBuf::from(jellyfin_media_path).join("manifests");
+        fetch_and_filter_manifest(&video.id, &manifests_dir, true).await?;
+
+        Ok(true)
+    }
+
+    fn create_episode_nfo(&self, video: &VideoInfo) -> Result<String> {
+        Ok(format!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<episodedetails>
-    <title>{}</title>
-    <aired>{}</aired>
-    <premiered>{}</premiered>
-    <plot>{}</plot>
-    <thumb>{}</thumb>
-</episodedetails>"#,
+    <episodedetails>
+        <title>{}</title>
+        <aired>{}</aired>
+        <premiered>{}</premiered>
+        <plot>{}</plot>
+        <thumb>{}</thumb>
+    </episodedetails>"#,
             video.title,
             video.upload_date,
             video.upload_date,
             video.description,
             video.thumbnail_url
-        );
-        std::fs::write(
-            season_dir.join(format!("{}.nfo", safe_filename)),
-            nfo_content,
-        )
-        .map_err(|e| anyhow!("Failed to write episode NFO: {}", e))?;
-
-        // Create STRM file
-        let strm_content = format!(
-            "http://{}/stream/{}",
-            config.server_address.trim_start_matches("http://"),
-            video.id
-        );
-        std::fs::write(
-            season_dir.join(format!("{}.strm", safe_filename)),
-            strm_content,
-        )
-        .map_err(|e| anyhow!("Failed to write STRM file: {}", e))?;
-
-        // Download channel thumbnail if it doesn't exist
-        let poster_path = self.media_dir.join("poster.jpg");
-        if !poster_path.exists() {
-            let client = reqwest::Client::new();
-            let img_bytes = client
-                .get(&video.thumbnail_url)
-                .send()
-                .await
-                .map_err(|e| anyhow!("Failed to fetch thumbnail: {}", e))?
-                .bytes()
-                .await
-                .map_err(|e| anyhow!("Failed to read thumbnail bytes: {}", e))?;
-
-            std::fs::write(&poster_path, img_bytes)
-                .map_err(|e| anyhow!("Failed to write channel poster: {}", e))?;
-        }
-
-        // Pre-cache manifest
-        self.cache_manifest(video.id.as_str(), config)
-            .await
-            .map_err(|e| anyhow!("Failed to cache manifest: {}", e))?;
-
-        Ok(())
+        ))
     }
 
-    pub async fn cache_manifest(&self, video_id: &str, config: &Config) -> Result<()> {
-        let manifests_dir = PathBuf::from(&config.jellyfin_media_path).join("manifests");
-        fetch_and_filter_manifest(video_id, &manifests_dir, true)
-            .await
-            .map(|_| ())
-    }
+    async fn create_channel_structure(&self) -> Result<()> {
+        // Create main channel directory
+        std::fs::create_dir_all(&self.media_dir)?;
 
-    pub async fn process_new_videos(&self, config: &Config) -> Result<usize> {
-        let mut new_videos = 0;
-        let videos = self.scan_videos().await?;
-
-        for video in videos {
-            let season = self.get_season_from_date(&video.upload_date)?;
-            let season_dir = self.media_dir.join(format!("Season {}", season));
-            let episode_base = format!("{} - {}", video.upload_date, video.title);
-            let safe_filename = episode_base
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '-' || c == ' ' {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
-                .collect::<String>();
-
-            if !season_dir.join(format!("{}.strm", safe_filename)).exists() {
-                self.create_media_files(&video, config).await?;
-                new_videos += 1;
+        // Handle channel images
+        if let Ok(images) = self.get_channel_images().await {
+            if let Some(poster_url) = images.poster {
+                if let Ok(bytes) = self.download_image(&poster_url).await {
+                    let _ = self.write_file(self.media_dir.join("poster.jpg"), bytes);
+                }
             }
-
-            // Cache manifest regardless of whether the video is new
-            self.cache_manifest(&video.id, config).await?;
+            if let Some(landscape_url) = images.landscape {
+                if let Ok(bytes) = self.download_image(&landscape_url).await {
+                    let _ = self.write_file(self.media_dir.join("landscape.jpg"), bytes);
+                }
+            }
         }
 
-        Ok(new_videos)
+        // Create channel NFO
+        let channel_nfo = match &self.source {
+            Source::Channel { name, handle, .. } => format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <tvshow>
+        <title>{}</title>
+        <plot>Videos from YouTube channel {}</plot>
+    </tvshow>"#,
+                name, handle
+            ),
+            Source::Playlist { name, .. } => format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <tvshow>
+        <title>{}</title>
+        <plot>Videos from YouTube playlist</plot>
+    </tvshow>"#,
+                name
+            ),
+        };
+
+        self.write_file(self.media_dir.join("tvshow.nfo"), channel_nfo)
     }
 }
 
@@ -462,6 +495,7 @@ impl Config {
                 check_interval: 240, // 4 hours in minutes
                 jellyfin_media_path: PathBuf::from("/media/youtube"),
                 server_address: String::from("localhost:8080"),
+                background_tasks_paused: false,
             };
             let json = serde_json::to_string_pretty(&default_config)
                 .map_err(|e| anyhow!("Failed to serialize default config: {}", e))?;
@@ -486,6 +520,11 @@ impl Config {
             .map_err(|e| anyhow!("Failed to write config file: {}", e))?;
         Ok(())
     }
+
+    pub fn set_background_tasks_paused(&mut self, paused: bool) -> Result<()> {
+        self.background_tasks_paused = paused;
+        self.save()
+    }
 }
 
 #[derive(Clone)]
@@ -501,6 +540,12 @@ pub async fn check_channels(config: ConfigState) -> Result<()> {
         // Get channels and config info with minimal lock time
         let check_info: Vec<ChannelCheckInfo> = {
             let config_guard = config.read().await;
+            if config_guard.background_tasks_paused {
+                info!("Background tasks are paused, sleeping for 10 minutes");
+                drop(config_guard);
+                tokio::time::sleep(Duration::from_secs(600)).await;
+                continue;
+            }
             config_guard
                 .channels
                 .iter()
@@ -522,9 +567,18 @@ pub async fn check_channels(config: ConfigState) -> Result<()> {
                 check_interval: 0, // Not needed for processing
                 jellyfin_media_path: info.jellyfin_media_path,
                 server_address: info.server_address,
+                background_tasks_paused: false, // Not needed for processing
             };
 
-            match info.channel.process_new_videos(&temp_config).await {
+            match info
+                .channel
+                .process_new_videos(
+                    &temp_config.jellyfin_media_path,
+                    &temp_config.server_address,
+                    &config,
+                )
+                .await
+            {
                 Ok(count) => {
                     if count > 0 {
                         info!("Added {} new videos for channel {}", count, info.name);

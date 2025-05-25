@@ -37,7 +37,7 @@ pub async fn create_playlist(
             id: form.playlist_id.clone(),
             name: form.name,
         },
-        last_checked: SystemTime::now(),
+        last_checked: SystemTime::UNIX_EPOCH,
         media_dir: config.jellyfin_media_path.join(&form.playlist_id),
     };
 
@@ -111,43 +111,57 @@ pub async fn load_playlist_videos(
     State(state): State<AppStateArc>,
     Path(id): Path<String>,
 ) -> Response {
-    let config = state.config.read().await;
+    // Get playlist info and config values needed for processing
+    let (playlist, media_path, server_addr) = {
+        let mut config = state.config.write().await;
 
-    if let Some(channel) = config.channels.iter().find(|c| c.id == id) {
-        match channel.process_new_videos(&config).await {
-            Ok(new_videos) => {
-                Html(format!(r#"
-                <div class="flex justify-between items-center border border-slate-200 rounded p-4 hover:bg-slate-50">
-                    <div>
-                        <h3 class="font-medium text-slate-800">{}</h3>
-                        <p class="text-sm text-slate-500">Playlist: {}</p>
-                        <p class="text-sm text-green-600 mt-1">Found {} new videos</p>
-                    </div>
-                    <div class="flex items-center gap-4">
-                        <button
-                            class="text-purple-600 hover:text-purple-800"
-                            hx-post="/api/playlists/{}/load"
-                            hx-swap="outerHTML"
-                            hx-target="closest div"
-                        >
-                            <span>Load Videos</span>
-                        </button>
-                        <a 
-                            href="/playlists/{}"
-                            class="text-purple-600 hover:text-purple-800"
-                        >
-                            Edit
-                        </a>
-                    </div>
-                </div>
-                "#, channel.get_name(), channel.get_handle_or_id(), new_videos, channel.id, channel.id)).into_response()
+        if let Some(channel) = config.channels.iter().find(|c| c.id == id) {
+            if !matches!(&channel.source, Source::Playlist { .. }) {
+                return (StatusCode::BAD_REQUEST, "Not a playlist entry").into_response();
             }
-            Err(e) => {
-                error!("Failed to scan playlist: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to scan playlist").into_response()
+
+            // Delete existing playlist directory
+            if let Err(e) = std::fs::remove_dir_all(&channel.media_dir) {
+                error!("Failed to delete playlist directory: {}", e);
             }
+
+            let mut channel = channel.clone();
+
+            // Reset last_checked
+            channel.last_checked = SystemTime::UNIX_EPOCH;
+
+            // Save the updated channel
+            if let Some(existing_channel) = config.channels.iter_mut().find(|c| c.id == id) {
+                *existing_channel = channel.clone();
+            }
+            if let Err(e) = config.save() {
+                error!("Failed to save config: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to save configuration",
+                )
+                    .into_response();
+            }
+
+            (
+                channel,
+                config.jellyfin_media_path.clone(),
+                config.server_address.clone(),
+            )
+        } else {
+            return (StatusCode::NOT_FOUND, "Playlist not found").into_response();
         }
-    } else {
-        (StatusCode::NOT_FOUND, "Playlist not found").into_response()
+    }; // Config lock is dropped here
+
+    // Process videos without holding any locks
+    match playlist
+        .process_new_videos(&media_path, &server_addr, &state.config)
+        .await
+    {
+        Ok(new_videos) => Html(format!("{} videos", new_videos)).into_response(),
+        Err(e) => {
+            error!("Failed to scan playlist: {}", e);
+            Html("Failed to load videos").into_response()
+        }
     }
 }
