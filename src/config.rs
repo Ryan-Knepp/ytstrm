@@ -73,7 +73,10 @@ impl Channel {
                 .process_video(video, jellyfin_media_path, server_address)
                 .await
             {
-                Ok(true) => new_videos += 1,
+                Ok(true) => {
+                    new_videos += 1;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
                 Ok(false) => {} // Video already exists
                 Err(e) => error!("Failed to process video {}: {}", video.id, e),
             }

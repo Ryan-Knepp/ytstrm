@@ -257,13 +257,6 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
                 continue;
             }
 
-            if config_guard.background_tasks_paused {
-                info!("Background tasks are paused, sleeping for 10 minutes");
-                drop(config_guard);
-                tokio::time::sleep(Duration::from_secs(600)).await;
-                continue;
-            }
-
             ManifestMaintenanceInfo {
                 jellyfin_media_path: config_guard.jellyfin_media_path.clone(),
             }
@@ -309,6 +302,7 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
                             {
                                 info!("Failed to refresh manifest for {}: {}", video_id, e);
                             }
+                            tokio::time::sleep(Duration::from_secs(15)).await;
                         }
                     }
                 }
