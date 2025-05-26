@@ -62,6 +62,9 @@ impl Channel {
         server_address: &str,
         config_state: &ConfigState,
     ) -> Result<usize> {
+        // Create channel structure once before processing videos
+        self.create_channel_structure().await?;
+
         let videos = self.scan_videos().await?;
         let mut new_videos = 0;
 
@@ -108,6 +111,14 @@ impl Channel {
             "--ignore-errors".to_string(),
             "--cookies".to_string(),
             "cookies.txt".to_string(),
+            "--sleep-interval".to_string(),
+            "8".to_string(), // 8 seconds between requests
+            "--max-sleep-interval".to_string(),
+            "60".to_string(), // Up to 1 minute if rate limited
+            "--sleep-subtitles".to_string(),
+            "5".to_string(), // 5 seconds between subtitle requests
+            "--retries".to_string(),
+            "infinite".to_string(), // Keep retrying on rate limit
         ];
 
         // Set date filtering based on last_checked for both channels and playlists
@@ -368,9 +379,6 @@ impl Channel {
         jellyfin_media_path: &PathBuf,
         server_address: &str,
     ) -> Result<bool> {
-        // Ensure channel structure exists
-        self.create_channel_structure().await?;
-
         // Get season info and create directory
         let season = self.get_season_from_date(&video.upload_date)?;
         let season_dir = self.media_dir.join(format!("Season {}", season));

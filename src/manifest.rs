@@ -319,6 +319,6 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
             );
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(900)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1800)).await;
     }
 }
