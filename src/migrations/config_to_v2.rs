@@ -33,6 +33,15 @@ pub struct ConfigV2 {
     server_address: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConfigV3 {
+    channels: Vec<Channel>,
+    check_interval: u64, // In minutes
+    jellyfin_media_path: PathBuf,
+    server_address: String,
+    background_tasks_paused: bool,
+}
+
 pub fn migrate_config(config_dir: &PathBuf) -> Result<()> {
     info!("Migrating config from v1 to v2...");
 
@@ -44,52 +53,65 @@ pub fn migrate_config(config_dir: &PathBuf) -> Result<()> {
         return Ok(());
     }
 
-    let config_v2 = match serde_json::from_str::<ConfigV2>(&content) {
-        Ok(config) => config,
-        Err(_) => {
-            let old_config: ConfigV1 = serde_json::from_str(&content)?;
-            info!("Parsed old config");
-            let mut config_v2 = ConfigV2 {
-                jellyfin_media_path: old_config.jellyfin_media_path.clone(),
-                server_address: old_config.server_address.clone(),
-                check_interval: old_config.check_interval,
-                channels: Vec::new(),
-            };
-            config_v2.channels = old_config
-                .channels
-                .into_iter()
-                .map(|channel| {
-                    let legacy: LegacyChannel =
-                        serde_json::from_value(serde_json::to_value(channel).unwrap())
-                            .expect("Failed to convert to legacy channel format");
+    if let Ok(config_v3) = serde_json::from_str::<ConfigV3>(&content) {
+        let new_config = Config {
+            jellyfin_media_path: config_v3.jellyfin_media_path.clone(),
+            server_address: config_v3.server_address.clone(),
+            check_interval: config_v3.check_interval,
+            channels: config_v3.channels,
+            background_tasks_paused: config_v3.background_tasks_paused,
+            maintain_manifest_cache: false,
+        };
+        new_config.save()?;
+        info!("Successfully migrated config from v3 format");
+        return Ok(());
+    }
 
-                    Channel {
-                        id: legacy.handle.clone(),
-                        source: Source::Channel {
-                            handle: legacy.handle,
-                            name: legacy.name,
-                            max_videos: legacy.max_videos,
-                            max_age_days: legacy.max_age_days,
-                        },
-                        last_checked: legacy.last_checked,
-                        media_dir: legacy.media_dir,
-                    }
-                })
-                .collect();
-            config_v2
-        }
+    if let Ok(config_v2) = serde_json::from_str::<ConfigV2>(&content) {
+        let new_config = Config {
+            jellyfin_media_path: config_v2.jellyfin_media_path.clone(),
+            server_address: config_v2.server_address.clone(),
+            check_interval: config_v2.check_interval,
+            channels: config_v2.channels,
+            background_tasks_paused: false,
+            maintain_manifest_cache: false,
+        };
+        new_config.save()?;
+        info!("Successfully migrated config from v2 format");
+        return Ok(());
+    }
+
+    let old_config: ConfigV1 = serde_json::from_str(&content)?;
+    let mut new_config = Config {
+        jellyfin_media_path: old_config.jellyfin_media_path.clone(),
+        server_address: old_config.server_address.clone(),
+        check_interval: old_config.check_interval,
+        channels: Vec::new(),
+        background_tasks_paused: false,
+        maintain_manifest_cache: false,
     };
+    new_config.channels = old_config
+        .channels
+        .into_iter()
+        .map(|channel| {
+            let legacy: LegacyChannel =
+                serde_json::from_value(serde_json::to_value(channel).unwrap())
+                    .expect("Failed to convert to legacy channel format");
 
-    // convert v2 to Config
-    let new_config = Config {
-        jellyfin_media_path: config_v2.jellyfin_media_path.clone(),
-        server_address: config_v2.server_address.clone(),
-        check_interval: config_v2.check_interval,
-        channels: config_v2.channels,
-        background_tasks_paused: false, // Set default value for new field
-    };
+            Channel {
+                id: legacy.handle.clone(),
+                source: Source::Channel {
+                    handle: legacy.handle,
+                    name: legacy.name,
+                    max_videos: legacy.max_videos,
+                    max_age_days: legacy.max_age_days,
+                },
+                last_checked: legacy.last_checked,
+                media_dir: legacy.media_dir,
+            }
+        })
+        .collect();
 
-    // Save migrated config
     new_config.save()?;
     info!("Successfully migrated config to v2 format");
 

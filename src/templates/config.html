@@ -3,14 +3,24 @@ Configuration{%endblock %} {% block content %}
 <div class="bg-white shadow-md rounded-lg p-6 border border-slate-200">
   <div class="flex justify-between items-center mb-6">
     <h1 class="text-2xl font-bold text-slate-800">Settings</h1>
-    <button
-      hx-post="/api/config/toggle-background-tasks"
-      hx-swap="outerHTML"
-      class="px-4 py-2 rounded-md font-medium {{ 'bg-yellow-500 hover:bg-yellow-600 text-white' if config.background_tasks_paused else 'bg-green-500 hover:bg-green-600 text-white' }}"
-    >
-      {{ "Resume" if config.background_tasks_paused else "Pause" }} Background
-      Tasks
-    </button>
+    <div class="flex gap-2">
+      <button
+        hx-post="/api/settings/toggle-background-tasks"
+        hx-swap="outerHTML"
+        class="px-4 py-2 rounded-md font-medium {{ 'bg-yellow-500 hover:bg-yellow-600 text-white' if config.background_tasks_paused else 'bg-green-500 hover:bg-green-600 text-white' }}"
+      >
+        {{ "Resume" if config.background_tasks_paused else "Pause" }} Background
+        Tasks
+      </button>
+      <button
+        hx-post="/api/settings/toggle-manifest-maintenance"
+        hx-swap="outerHTML"
+        class="px-4 py-2 rounded-md font-medium {{ 'bg-yellow-500 hover:bg-yellow-600 text-white' if not config.maintain_manifest_cache else 'bg-green-500 hover:bg-green-600 text-white' }}"
+      >
+        {{ "Enable" if not config.maintain_manifest_cache else "Disable" }}
+        Manifest Cache
+      </button>
+    </div>
   </div>
 
   <!-- Server Settings Section -->

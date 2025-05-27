@@ -257,6 +257,13 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
                 continue;
             }
 
+            if config_guard.maintain_manifest_cache == false {
+                info!("Manifest maintenance is disabled, skipping");
+                drop(config_guard);
+                tokio::time::sleep(tokio::time::Duration::from_secs(900)).await;
+                continue;
+            }
+
             ManifestMaintenanceInfo {
                 jellyfin_media_path: config_guard.jellyfin_media_path.clone(),
             }

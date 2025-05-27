@@ -24,6 +24,10 @@ pub fn routes() -> Router<AppStateArc> {
             "/config/toggle-background-tasks",
             post(settings::toggle_background_tasks),
         )
+        .route(
+            "/api/settings/toggle-manifest-maintenance",
+            post(settings::toggle_manifest_maintenance),
+        )
         // Channel routes
         .route("/channels/new", post(channels::create_channel))
         .route("/channels/{id}", put(channels::update_channel))

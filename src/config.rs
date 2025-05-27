@@ -45,6 +45,7 @@ pub struct Config {
     pub jellyfin_media_path: PathBuf,
     pub server_address: String,
     pub background_tasks_paused: bool,
+    pub maintain_manifest_cache: bool,
 }
 
 pub struct VideoInfo {
@@ -507,6 +508,7 @@ impl Config {
                 jellyfin_media_path: PathBuf::from("/media/youtube"),
                 server_address: String::from("localhost:8080"),
                 background_tasks_paused: false,
+                maintain_manifest_cache: false,
             };
             let json = serde_json::to_string_pretty(&default_config)
                 .map_err(|e| anyhow!("Failed to serialize default config: {}", e))?;
@@ -534,6 +536,11 @@ impl Config {
 
     pub fn set_background_tasks_paused(&mut self, paused: bool) -> Result<()> {
         self.background_tasks_paused = paused;
+        self.save()
+    }
+
+    pub fn set_maintain_manifest_cache(&mut self, enabled: bool) -> Result<()> {
+        self.maintain_manifest_cache = enabled;
         self.save()
     }
 }
@@ -579,6 +586,7 @@ pub async fn check_channels(config: ConfigState) -> Result<()> {
                 jellyfin_media_path: info.jellyfin_media_path,
                 server_address: info.server_address,
                 background_tasks_paused: false, // Not needed for processing
+                maintain_manifest_cache: false, // Not needed for processing
             };
 
             match info
