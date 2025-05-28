@@ -4,6 +4,7 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
+use minijinja::context;
 use serde::Deserialize;
 use std::time::SystemTime;
 use tracing::error;
@@ -107,61 +108,47 @@ pub async fn delete_playlist(State(state): State<AppStateArc>, Path(id): Path<St
     (StatusCode::SEE_OTHER, [("HX-Redirect", "/")]).into_response()
 }
 
-pub async fn load_playlist_videos(
+pub async fn reset_playlist(
     State(state): State<AppStateArc>,
     Path(id): Path<String>,
-) -> Response {
-    // Get playlist info and config values needed for processing
-    let (playlist, media_path, server_addr) = {
-        let mut config = state.config.write().await;
+) -> impl IntoResponse {
+    let mut config = state.config.write().await;
 
-        if let Some(channel) = config.channels.iter().find(|c| c.id == id) {
-            if !matches!(&channel.source, Source::Playlist { .. }) {
-                return (StatusCode::BAD_REQUEST, "Not a playlist entry").into_response();
-            }
+    if let Some(channel) = config.channels.iter_mut().find(|c| c.id == id) {
+        // Reset last_checked time
+        channel.last_checked = SystemTime::UNIX_EPOCH;
 
-            // Delete existing playlist directory
-            if let Err(e) = std::fs::remove_dir_all(&channel.media_dir) {
-                error!("Failed to delete playlist directory: {}", e);
-            }
-
-            let mut channel = channel.clone();
-
-            // Reset last_checked
-            channel.last_checked = SystemTime::UNIX_EPOCH;
-
-            // Save the updated channel
-            if let Some(existing_channel) = config.channels.iter_mut().find(|c| c.id == id) {
-                *existing_channel = channel.clone();
-            }
-            if let Err(e) = config.save() {
-                error!("Failed to save config: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to save configuration",
-                )
-                    .into_response();
-            }
-
-            (
-                channel,
-                config.jellyfin_media_path.clone(),
-                config.server_address.clone(),
-            )
-        } else {
-            return (StatusCode::NOT_FOUND, "Playlist not found").into_response();
+        // Delete media directory if it exists
+        if let Err(e) = tokio::fs::remove_dir_all(&channel.media_dir).await {
+            error!("Failed to delete directory: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "error occurred").into_response();
         }
-    }; // Config lock is dropped here
 
-    // Process videos without holding any locks
-    match playlist
-        .process_new_videos(&media_path, &server_addr, &state.config)
-        .await
-    {
-        Ok(new_videos) => Html(format!("{} videos", new_videos)).into_response(),
-        Err(e) => {
-            error!("Failed to scan playlist: {}", e);
-            Html("Failed to load videos").into_response()
+        // Save config
+        if let Err(e) = config.save() {
+            error!("Failed to save config: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "error occurred").into_response();
         }
+
+        return Html(format!(r#"<span>Reset Playlist</span>"#)).into_response();
     }
+
+    (StatusCode::NOT_FOUND, "Playlist not found").into_response()
+}
+
+pub async fn progress_view(
+    State(state): State<AppStateArc>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    Html(
+        state
+            .templates
+            .render(
+                "partials/load_video_sse.html",
+                context! {
+                    channel_id => id,
+                },
+            )
+            .unwrap(),
+    )
 }

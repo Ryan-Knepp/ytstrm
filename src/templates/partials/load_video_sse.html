@@ -1,0 +1,18 @@
+<pre
+  id="terminal"
+  hx-ext="sse"
+  sse-connect="/api/progress/{{ channel_id }}"
+  sse-swap="message"
+  sse-close="complete"
+  hx-swap="beforeend"
+  class="font-mono text-sm bg-slate-900 text-slate-100 p-4 rounded-lg h-[300px] overflow-y-auto"
+>
+Starting video processing...
+</pre>
+
+<script>
+  document.addEventListener("htmx:sseAfterMessage", function (event) {
+    var outputDiv = document.getElementById("terminal");
+    outputDiv.scrollTop = outputDiv.scrollHeight;
+  });
+</script>

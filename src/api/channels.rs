@@ -4,6 +4,7 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
+use minijinja::context;
 use serde::Deserialize;
 use serde_with::{NoneAsEmptyString, serde_as};
 use std::time::SystemTime;
@@ -138,74 +139,57 @@ pub async fn delete_channel(State(state): State<AppStateArc>, Path(id): Path<Str
     (StatusCode::SEE_OTHER, [("HX-Redirect", "/")]).into_response()
 }
 
-pub async fn load_channel_videos(
+pub async fn reset_channel(
     State(state): State<AppStateArc>,
     Path(id): Path<String>,
-) -> Response {
-    // Get channel info and config values needed for processing
-    let (channel, media_path, server_addr) = {
-        let mut config = state.config.write().await;
+) -> impl IntoResponse {
+    let mut config = state.config.write().await;
 
-        if let Some(channel) = config.channels.iter().find(|c| c.id == id) {
-            if !matches!(&channel.source, Source::Channel { .. }) {
-                return (StatusCode::BAD_REQUEST, "Not a channel entry").into_response();
-            }
+    if let Some(channel) = config.channels.iter_mut().find(|c| c.id == id) {
+        // Set last_checked based on channel configuration
+        channel.last_checked = match &channel.source {
+            Source::Channel { max_age_days, .. } => match max_age_days {
+                Some(days) => {
+                    let now = chrono::Utc::now();
+                    let past_date = now - chrono::Duration::days(*days as i64);
+                    SystemTime::from(past_date)
+                }
+                None => SystemTime::UNIX_EPOCH,
+            },
+            _ => return (StatusCode::BAD_REQUEST, "Not a channel entry").into_response(),
+        };
 
-            // Delete existing channel directory
-            if let Err(e) = std::fs::remove_dir_all(&channel.media_dir) {
-                error!("Failed to delete channel directory: {}", e);
-            }
-
-            let mut channel = channel.clone();
-
-            // Reset last_checked on our local copy
-            if let Source::Channel { max_age_days, .. } = &channel.source {
-                channel.last_checked = match max_age_days {
-                    Some(days) => {
-                        let now = chrono::Utc::now();
-                        let past_date = now - chrono::Duration::days(*days as i64);
-                        SystemTime::from(past_date)
-                    }
-                    None => SystemTime::UNIX_EPOCH,
-                };
-            }
-
-            // Save the updated channel
-            if let Some(existing_channel) = config.channels.iter_mut().find(|c| c.id == id) {
-                *existing_channel = channel.clone();
-            }
-            if let Err(e) = config.save() {
-                error!("Failed to save config: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to save configuration",
-                )
-                    .into_response();
-            }
-
-            (
-                channel,
-                config.jellyfin_media_path.clone(),
-                config.server_address.clone(),
-            )
-        } else {
-            return (StatusCode::NOT_FOUND, "Channel not found").into_response();
+        // Delete media directory if it exists
+        if let Err(e) = tokio::fs::remove_dir_all(&channel.media_dir).await {
+            error!("Failed to delete directory: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "error occurred").into_response();
         }
-    }; // Config lock is dropped here
 
-    // Process videos without holding any locks
-    match channel
-        .process_new_videos(&media_path, &server_addr, &state.config)
-        .await
-    {
-        Ok(new_videos) => Html(format!("{} videos", new_videos)).into_response(),
-        Err(e) => {
-            error!("Failed to scan channel: {}", e);
-            Html("Failed to load videos").into_response()
+        // Save config
+        if let Err(e) = config.save() {
+            error!("Failed to save config: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "error occurred").into_response();
         }
+
+        Html(format!(r#"<span>Reset Channel</span>"#)).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "Channel not found").into_response()
     }
 }
 
-// Executing yt-dlp with args: ["--compat-options", "no-youtube-channel-redirect", "--compat-options", "no-youtube-unavailable-videos", "--no-warnings", "--dump-json", "--ignore-errors", "--cookies", "cookies.txt", "--dateafter", "20240109", "--dateafter", "today-500days", "--playlist-start", "1", "--playlist-end", "5", "https://www.youtube.com/@dudeperfect/videos"]
-
-// Executing yt-dlp with args: ["--compat-options", "no-youtube-channel-redirect", "--compat-options", "no-youtube-unavailable-videos", "--no-warnings", "--dump-json", "--ignore-errors", "--cookies", "cookies.txt", "--dateafter", "19691230", "https://www.youtube.com/playlist?list=PLCsuqbR8ZoiAkjk2dD10u-gigxGZw3am5"]
+pub async fn progress_view(
+    State(state): State<AppStateArc>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    Html(
+        state
+            .templates
+            .render(
+                "partials/load_video_sse.html",
+                context! {
+                    channel_id => id,
+                },
+            )
+            .unwrap(),
+    )
+}

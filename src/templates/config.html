@@ -5,7 +5,7 @@ Configuration{%endblock %} {% block content %}
     <h1 class="text-2xl font-bold text-slate-800">Settings</h1>
     <div class="flex gap-2">
       <button
-        hx-post="/api/settings/toggle-background-tasks"
+        hx-post="/api/config/toggle-background-tasks"
         hx-swap="outerHTML"
         class="px-4 py-2 rounded-md font-medium {{ 'bg-yellow-500 hover:bg-yellow-600 text-white' if config.background_tasks_paused else 'bg-green-500 hover:bg-green-600 text-white' }}"
       >
@@ -13,7 +13,7 @@ Configuration{%endblock %} {% block content %}
         Tasks
       </button>
       <button
-        hx-post="/api/settings/toggle-manifest-maintenance"
+        hx-post="/api/config/toggle-manifest-maintenance"
         hx-swap="outerHTML"
         class="px-4 py-2 rounded-md font-medium {{ 'bg-yellow-500 hover:bg-yellow-600 text-white' if not config.maintain_manifest_cache else 'bg-green-500 hover:bg-green-600 text-white' }}"
       >
@@ -99,37 +99,6 @@ Configuration{%endblock %} {% block content %}
             </p>
           </div>
           <div class="flex items-center gap-2">
-            <button
-              class="inline-flex items-center px-3 py-2 text-sm font-medium text-white bg-purple-600 rounded-md hover:bg-purple-700 cursor-pointer"
-              hx-post="/api/channels/{{ channel.channel.id }}/load"
-              hx-swap="innerHTML"
-              hx-target="#video-count-{{ channel.channel.id | replace('@', '_at_') }}"
-            >
-              <div class="htmx-indicator mr-2">
-                <svg
-                  class="animate-spin h-4 w-4"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <circle
-                    class="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    stroke-width="4"
-                  ></circle>
-                  <path
-                    class="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                  ></path>
-                </svg>
-              </div>
-              <span>Load Videos</span>
-            </button>
-
             <a
               href="/channels/{{ channel.channel.id }}"
               class="inline-flex items-center px-3 py-2 text-sm font-medium text-purple-600 border border-purple-600 rounded-md hover:bg-purple-50"
@@ -187,37 +156,6 @@ Configuration{%endblock %} {% block content %}
             </p>
           </div>
           <div class="flex items-center gap-2">
-            <button
-              class="inline-flex items-center px-3 py-2 text-sm font-medium text-white bg-purple-600 rounded-md hover:bg-purple-700 cursor-pointer"
-              hx-post="/api/playlists/{{ playlist.channel.id }}/load"
-              hx-swap="innerHTML"
-              hx-target="#video-count-{{ playlist.channel.id | replace('@', '_at_') }}"
-            >
-              <div class="htmx-indicator mr-2">
-                <svg
-                  class="animate-spin h-4 w-4"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <circle
-                    class="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    stroke-width="4"
-                  ></circle>
-                  <path
-                    class="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                  ></path>
-                </svg>
-              </div>
-              <span>Load Videos</span>
-            </button>
-
             <a
               href="/playlists/{{ playlist.channel.id }}"
               class="inline-flex items-center px-3 py-2 text-sm font-medium text-purple-600 border border-purple-600 rounded-md hover:bg-purple-50"

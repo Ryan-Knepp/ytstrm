@@ -1,0 +1,67 @@
+{% extends "base.html" %} {% block title %}Loading Videos - {{ name }}{%
+endblock %} {% block content %}
+<div class="bg-white shadow-md rounded-lg p-6 border border-slate-200">
+  <div class="flex justify-between items-center mb-6">
+    <h1 class="text-2xl font-bold text-slate-800">
+      Loading Videos for {{ name }}
+    </h1>
+    <a href="/" class="text-purple-600 hover:text-purple-700"
+      >Back to Settings</a
+    >
+  </div>
+
+  <div
+    class="font-mono text-sm bg-slate-900 text-slate-100 p-4 rounded-lg h-[500px] overflow-y-auto"
+    hx-ext="sse"
+    sse-connect="/api/progress/{{ id|urlencode }}"
+    sse-swap="beforeend"
+  >
+    <div class="mb-2">Waiting for progress updates...</div>
+  </div>
+</div>
+
+<script>
+  // Handle connection opening
+  htmx.on("htmx:sseOpen", (evt) => {
+    console.log("SSE connection established");
+    // Clear initial waiting message
+    const container = evt.detail.elt;
+    container.innerHTML = "";
+  });
+
+  // Handle messages
+  htmx.on("htmx:sseMessage", (evt) => {
+    console.log("Received message:", evt.detail);
+    const message = evt.detail.data;
+
+    // Create a new message element
+    const messageDiv = document.createElement("div");
+    messageDiv.className = "mb-2";
+    messageDiv.textContent = message;
+
+    // Add to container
+    evt.detail.elt.appendChild(messageDiv);
+
+    // Scroll to bottom
+    evt.detail.elt.scrollTop = evt.detail.elt.scrollHeight;
+  });
+
+  // Handle connection closure
+  htmx.on("htmx:sseClose", (evt) => {
+    console.log("SSE connection closed:", evt.detail.type);
+    const messageDiv = document.createElement("div");
+    messageDiv.className = "mb-2 text-green-400";
+    messageDiv.textContent = "Process complete!";
+    evt.detail.elt.appendChild(messageDiv);
+  });
+
+  // Handle errors
+  htmx.on("htmx:sseError", (evt) => {
+    console.error("SSE connection error:", evt.detail.error);
+    const messageDiv = document.createElement("div");
+    messageDiv.className = "mb-2 text-red-400";
+    messageDiv.textContent = "Error: Connection failed";
+    evt.detail.elt.appendChild(messageDiv);
+  });
+</script>
+{% endblock %}

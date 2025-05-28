@@ -216,7 +216,7 @@ pub async fn toggle_manifest_maintenance(State(state): State<AppStateArc>) -> im
     Html(format!(
         r#"
         <button
-            hx-post="/api/settings/toggle-manifest-maintenance"
+            hx-post="/api/config/toggle-manifest-maintenance"
             hx-swap="outerHTML"
             class="px-4 py-2 rounded-md font-medium {}">
             {} Manifest Cache

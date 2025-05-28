@@ -64,6 +64,40 @@
       </div>
     </form>
   </div>
+
+  {% if playlist %}
+  <!-- Video Management Card -->
+  <div class="bg-white shadow-md rounded-lg p-6 border border-slate-200">
+    <h2 class="text-xl font-bold text-slate-800 mb-4">Video Management</h2>
+    
+    <!-- Control Buttons -->
+    <div class="flex space-x-4 mb-6">
+      <button
+        hx-post="/api/playlists/{{ playlist.id }}/reset"
+        hx-confirm="This will delete all downloaded videos. Are you sure?"
+        class="bg-yellow-600 text-white px-4 py-2 rounded hover:bg-yellow-700 focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 transition-colors"
+      >
+        Reset Playlist
+      </button>
+      
+      <button
+        hx-get="/api/playlists/{{ playlist.id }}/progress-view"
+        hx-target="#progress-area"
+        hx-swap="innerHTML"
+        class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-colors"
+      >
+        Load Videos
+      </button>
+    </div>
+
+    <!-- Progress Area -->
+    <div 
+      id="progress-area"
+      class="font-mono text-sm bg-slate-900 text-slate-100 p-4 rounded-lg h-[300px] overflow-y-auto"
+    >
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 <div id="save-indicator" class="htmx-indicator fixed bottom-4 right-4">

@@ -85,8 +85,51 @@
       </div>
     </form>
   </div>
+
+  {% if channel %}
+  <!-- Video Management Card -->
+  <div class="bg-white shadow-md rounded-lg p-6 border border-slate-200">
+    <h2 class="text-xl font-bold text-slate-800 mb-4">Video Management</h2>
+    
+    <!-- Control Buttons -->
+    <div class="flex space-x-4 mb-6">
+      <button
+        hx-post="/api/channels/{{ channel.id }}/reset"
+        hx-confirm="This will delete all downloaded videos. Are you sure?"
+        hx-indicator="#reset-indicator"
+        class="bg-yellow-600 text-white px-4 py-2 rounded hover:bg-yellow-700 focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 transition-colors relative"
+      >
+        <span>Reset Channel</span>
+        <span id="reset-indicator" 
+              class="htmx-indicator absolute inset-0 flex items-center justify-center bg-yellow-600">
+          <svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+        </span>
+      </button>
+      
+      <button
+        hx-get="/api/channels/{{ channel.id }}/progress-view"
+        hx-target="#progress-area"
+        hx-swap="innerHTML"
+        class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-colors"
+      >
+        Load Videos
+      </button>
+    </div>
+
+    <!-- Progress Area -->
+    <div 
+      id="progress-area"
+      class="font-mono text-sm bg-slate-900 text-slate-100 p-4 rounded-lg h-[300px] overflow-y-auto"
+    >
+    </div>
+  </div>
+  {% endif %}
 </div>
 
+<!-- Save Indicator -->
 <div id="save-indicator" class="htmx-indicator fixed bottom-4 right-4">
   <div class="bg-slate-800 text-white px-4 py-2 rounded-md shadow-lg">
     Saving...

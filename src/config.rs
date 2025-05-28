@@ -1,9 +1,9 @@
 use anyhow::{Result, anyhow};
-use chrono::{DateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use std::{path::PathBuf, time::Duration};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::ConfigState;
@@ -56,38 +56,97 @@ pub struct VideoInfo {
     pub thumbnail_url: String,
 }
 
+pub type ProgressSender = Option<mpsc::Sender<String>>;
+
 impl Channel {
     pub async fn process_new_videos(
         &self,
         jellyfin_media_path: &PathBuf,
         server_address: &str,
         config_state: &ConfigState,
+        progress: ProgressSender,
     ) -> Result<usize> {
-        // Create channel structure once before processing videos
+        info!(
+            "Starting process_new_videos with progress sender: {}",
+            progress.is_some()
+        );
+
         self.create_channel_structure().await?;
+
+        let message = "Scanning for new videos...\n".to_string();
+        info!(message);
+        if let Some(sender) = &progress {
+            info!("Attempting to send progress message");
+            match sender.send(message).await {
+                Ok(_) => info!("Successfully sent progress message"),
+                Err(e) => error!("Failed to send progress message: {}", e),
+            }
+        } else {
+            info!("No progress sender available");
+        }
 
         let videos = self.scan_videos().await?;
         let mut new_videos = 0;
 
-        for video in &videos {
+        // Send initial count
+        let message = format!("Found {} videos to process\n", videos.len());
+        info!(message);
+        if let Some(sender) = &progress {
+            let _ = sender.send(message).await;
+        }
+
+        for (i, video) in videos.iter().enumerate() {
             match self
                 .process_video(video, jellyfin_media_path, server_address)
                 .await
             {
                 Ok(true) => {
                     new_videos += 1;
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    let message =
+                        format!("[{}/{}] Processed {}\n", i + 1, videos.len(), video.title);
+                    info!(message);
+                    if let Some(sender) = &progress {
+                        let _ = sender.send(message).await;
+                    }
                 }
-                Ok(false) => {} // Video already exists
-                Err(e) => error!("Failed to process video {}: {}", video.id, e),
+                Ok(false) => {
+                    let message = format!(
+                        "[{}/{}] Skipped {} (already exists)\n",
+                        i + 1,
+                        videos.len(),
+                        video.title
+                    );
+                    info!(message);
+                    if let Some(sender) = &progress {
+                        let _ = sender.send(message).await;
+                    }
+                }
+                Err(e) => {
+                    let message = format!(
+                        "[{}/{}] Error processing {}: {}\n",
+                        i + 1,
+                        videos.len(),
+                        video.title,
+                        e
+                    );
+                    error!("{}", message);
+                    if let Some(sender) = &progress {
+                        let _ = sender.send(message).await;
+                    }
+                }
             }
         }
 
-        info!(
-            "Processed {} new videos for channel {}",
+        // Send completion message
+        let message = format!(
+            "Processed {} videos for channel {}\n",
             new_videos,
             self.get_name()
         );
+        info!(message);
+        if let Some(sender) = &progress {
+            let _ = sender.send(message).await;
+        }
 
         // Always update last_checked time
         let mut config = config_state.write().await;
@@ -240,9 +299,9 @@ impl Channel {
             }
         }
 
-        if videos.is_empty() {
-            return Err(anyhow!("No videos found for channel {}", self.get_name()));
-        }
+        // if videos.is_empty() {
+        //     return Err(anyhow!("No videos found for channel {}", self.get_name()));
+        // }
 
         Ok(videos)
     }
@@ -595,6 +654,7 @@ pub async fn check_channels(config: ConfigState) -> Result<()> {
                     &temp_config.jellyfin_media_path,
                     &temp_config.server_address,
                     &config,
+                    None,
                 )
                 .await
             {
