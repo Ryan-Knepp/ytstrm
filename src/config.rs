@@ -173,7 +173,16 @@ impl Channel {
             "--compat-options".to_string(),
             "no-youtube-unavailable-videos".to_string(),
             "--no-warnings".to_string(),
-            "--dump-json".to_string(),
+            "--print".to_string(),
+            format!(
+                "{{\
+                \"id\":%(id)j,\
+                \"title\":%(title)j,\
+                \"description\":%(description)j,\
+                \"upload_date\":%(upload_date)j,\
+                \"thumbnail\":%(thumbnail)j\
+                }}"
+            ),
             "--ignore-errors".to_string(),
             "--no-download-archive".to_string(),
             "--cookies".to_string(),

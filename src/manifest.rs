@@ -87,10 +87,17 @@ pub async fn fetch_and_filter_manifest(
         .await
         .map_err(|e| anyhow!("Failed to execute yt-dlp: {}", e))?;
 
-    send_cmd_output_progress(progress, output.clone()).await;
-
     // Check if yt-dlp succeeded and output isn't empty
     if !output.status.success() {
+        if let Some(progress) = progress {
+            let _ = progress
+                .send(format!(
+                    "yt-dlp failed with status {}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                ))
+                .await;
+        }
         return Err(anyhow!(
             "yt-dlp failed: {}",
             String::from_utf8_lossy(&output.stderr)
@@ -105,6 +112,14 @@ pub async fn fetch_and_filter_manifest(
     info!("yt-dlp stdout: {}", String::from_utf8_lossy(&output.stdout));
     if !output.stderr.is_empty() {
         info!("yt-dlp stderr: {}", String::from_utf8_lossy(&output.stderr));
+        if let Some(progress) = progress {
+            let _ = progress
+                .send(format!(
+                    "yt-dlp stderr: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ))
+                .await;
+        }
     }
 
     let metadata: Value = serde_json::from_slice(&output.stdout).map_err(|e| {
@@ -127,6 +142,11 @@ pub async fn fetch_and_filter_manifest(
         .ok_or_else(|| anyhow!("No HLS manifest URL found"))?;
 
     info!("Found HLS manifest URL: {}", manifest_url);
+    if let Some(progress) = progress {
+        let _ = progress
+            .send(format!("Found HLS manifest URL: {}", manifest_url))
+            .await;
+    }
 
     let client = Client::new();
     let content = client
