@@ -114,7 +114,7 @@ async fn stream_youtube(
         }
     }
 
-    match fetch_and_filter_manifest(&video_id, &cache_dir, true).await {
+    match fetch_and_filter_manifest(&video_id, &cache_dir, true, &None).await {
         Ok(manifest) => {
             info!("Sending manifest response with length: {}", manifest.len());
             Response::builder()

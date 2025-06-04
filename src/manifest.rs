@@ -8,6 +8,7 @@ use tokio::process::Command;
 use tracing::info;
 
 use crate::ConfigState;
+use crate::config::{ProgressSender, send_cmd_output_progress};
 
 pub struct ManifestCache {
     pub video_id: String,
@@ -75,6 +76,7 @@ pub async fn fetch_and_filter_manifest(
     video_id: &str,
     cache_dir: &Path,
     save_cache: bool,
+    progress: &ProgressSender,
 ) -> Result<String> {
     let url = format!("https://www.youtube.com/watch?v={}", video_id);
 
@@ -84,6 +86,8 @@ pub async fn fetch_and_filter_manifest(
         .output()
         .await
         .map_err(|e| anyhow!("Failed to execute yt-dlp: {}", e))?;
+
+    send_cmd_output_progress(progress, output.clone()).await;
 
     // Check if yt-dlp succeeded and output isn't empty
     if !output.status.success() {
@@ -305,7 +309,7 @@ pub async fn maintain_manifest_cache(config: ConfigState) {
                             info!("Refreshing manifest for {}", video_id);
                             count += 1;
                             if let Err(e) =
-                                fetch_and_filter_manifest(video_id, &cache_dir, true).await
+                                fetch_and_filter_manifest(video_id, &cache_dir, true, &None).await
                             {
                                 info!("Failed to refresh manifest for {}: {}", video_id, e);
                             }

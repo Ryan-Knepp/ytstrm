@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::process::Output;
 use std::time::SystemTime;
 use std::{path::PathBuf, time::Duration};
 use tokio::process::Command;
@@ -58,6 +59,19 @@ pub struct VideoInfo {
 
 pub type ProgressSender = Option<mpsc::Sender<String>>;
 
+pub async fn send_cmd_output_progress(sender: &ProgressSender, output: Output) {
+    if let Some(sender) = sender {
+        if !output.stdout.is_empty() {
+            let message = String::from_utf8_lossy(&output.stdout).to_string();
+            let _ = sender.send(message).await;
+        }
+        if !output.stderr.is_empty() {
+            let message = String::from_utf8_lossy(&output.stderr).to_string();
+            let _ = sender.send(message).await;
+        }
+    }
+}
+
 impl Channel {
     pub async fn process_new_videos(
         &self,
@@ -66,26 +80,15 @@ impl Channel {
         config_state: &ConfigState,
         progress: ProgressSender,
     ) -> Result<usize> {
-        info!(
-            "Starting process_new_videos with progress sender: {}",
-            progress.is_some()
-        );
-
         self.create_channel_structure().await?;
 
         let message = "Scanning for new videos...\n".to_string();
         info!(message);
         if let Some(sender) = &progress {
-            info!("Attempting to send progress message");
-            match sender.send(message).await {
-                Ok(_) => info!("Successfully sent progress message"),
-                Err(e) => error!("Failed to send progress message: {}", e),
-            }
-        } else {
-            info!("No progress sender available");
+            let _ = sender.send(message).await;
         }
 
-        let videos = self.scan_videos().await?;
+        let videos = self.scan_videos(&progress).await?;
         let mut new_videos = 0;
 
         // Send initial count
@@ -97,7 +100,7 @@ impl Channel {
 
         for (i, video) in videos.iter().enumerate() {
             match self
-                .process_video(video, jellyfin_media_path, server_address)
+                .process_video(video, jellyfin_media_path, server_address, &progress)
                 .await
             {
                 Ok(true) => {
@@ -159,7 +162,7 @@ impl Channel {
         Ok(new_videos)
     }
 
-    pub async fn scan_videos(&self) -> Result<Vec<VideoInfo>> {
+    pub async fn scan_videos(&self, sender: &ProgressSender) -> Result<Vec<VideoInfo>> {
         let url = self.get_url("videos");
 
         info!("Fetching videos from URL: {}", url);
@@ -172,16 +175,17 @@ impl Channel {
             "--no-warnings".to_string(),
             "--dump-json".to_string(),
             "--ignore-errors".to_string(),
+            "--no-download-archive".to_string(),
             "--cookies".to_string(),
             "cookies.txt".to_string(),
             "--sleep-interval".to_string(),
-            "8".to_string(), // 8 seconds between requests
+            "8".to_string(),
             "--max-sleep-interval".to_string(),
-            "60".to_string(), // Up to 1 minute if rate limited
+            "60".to_string(),
             "--sleep-subtitles".to_string(),
-            "5".to_string(), // 5 seconds between subtitle requests
+            "5".to_string(),
             "--retries".to_string(),
-            "infinite".to_string(), // Keep retrying on rate limit
+            "infinite".to_string(),
         ];
 
         // Set date filtering based on last_checked for both channels and playlists
@@ -232,6 +236,11 @@ impl Channel {
 
         // print out the command for debugging
         info!("Executing yt-dlp with args: {:?}", args);
+        if let Some(sender) = sender {
+            let _ = sender
+                .send(format!("Executing yt-dlp with args: {:?}", args))
+                .await;
+        }
 
         let output = Command::new("yt-dlp")
             .args(&args)
@@ -258,6 +267,8 @@ impl Channel {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+
+        send_cmd_output_progress(sender, output.clone()).await;
 
         let mut videos: Vec<VideoInfo> = output
             .stdout
@@ -441,6 +452,7 @@ impl Channel {
         video: &VideoInfo,
         jellyfin_media_path: &PathBuf,
         server_address: &str,
+        progress: &ProgressSender,
     ) -> Result<bool> {
         // Get season info and create directory
         let season = self.get_season_from_date(&video.upload_date)?;
@@ -486,7 +498,7 @@ impl Channel {
 
         // Pre-cache manifest
         let manifests_dir = PathBuf::from(jellyfin_media_path).join("manifests");
-        fetch_and_filter_manifest(&video.id, &manifests_dir, true).await?;
+        fetch_and_filter_manifest(&video.id, &manifests_dir, true, progress).await?;
 
         Ok(true)
     }
